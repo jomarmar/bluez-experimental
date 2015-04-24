@@ -99,4 +99,30 @@ Anyway:
 ```
   ./bootstrap
   ./configure --enable-experimental --enable-library
+  make
 ```
+Before install (`make install`):
+ * Stop bluetoothd:
+
+ ```
+   systemctl stop bluetooth
+   systemctl disable bluetooth
+ ```
+
+ * Remove previously installed bluez (if already installed):
+ ```
+   i.e. (arch linux)
+   pacman -Rdd bluez
+ ```
+After install:
+ * Edit `/usr/lib/systemd/system/bluetooth.service` to add `-E`experimental flag
+ ```
+   ExecStart=/usr/local/libexec/bluetooth/bluetoothd -E
+ ```
+ * Start and enable service
+ ```
+   systemctl enable bluetooth
+   systemctl start bluetooth
+ ```
+
+ 
