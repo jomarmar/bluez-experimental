@@ -921,9 +921,14 @@ static int set_attribseq(sdp_session_t *session, uint32_t handle, uint16_t attri
 	}
 
 	/* Create arrays */
-	dtdArray = (void **)malloc(argc * sizeof(void *));
-	valueArray = (void **)malloc(argc * sizeof(void *));
-	allocArray = (void **)malloc(argc * sizeof(void *));
+	dtdArray = malloc(argc * sizeof(void *));
+	valueArray = malloc(argc * sizeof(void *));
+	allocArray = malloc(argc * sizeof(void *));
+
+	if (!dtdArray || !valueArray || !allocArray) {
+		ret = -ENOMEM;
+		goto cleanup;
+	}
 
 	/* Loop on all args, add them in arrays */
 	for (i = 0; i < argc; i++) {
@@ -931,7 +936,12 @@ static int set_attribseq(sdp_session_t *session, uint32_t handle, uint16_t attri
 		if (!strncasecmp(argv[i], "u0x", 3)) {
 			/* UUID16 */
 			uint16_t value_int = strtoul((argv[i]) + 3, NULL, 16);
-			uuid_t *value_uuid = (uuid_t *) malloc(sizeof(uuid_t));
+			uuid_t *value_uuid = malloc(sizeof(uuid_t));
+			if (!value_uuid) {
+				ret = -ENOMEM;
+				goto cleanup;
+			}
+
 			allocArray[i] = value_uuid;
 			sdp_uuid16_create(value_uuid, value_int);
 
@@ -940,7 +950,12 @@ static int set_attribseq(sdp_session_t *session, uint32_t handle, uint16_t attri
 			valueArray[i] = &value_uuid->value.uuid16;
 		} else if (!strncasecmp(argv[i], "0x", 2)) {
 			/* Int */
-			uint32_t *value_int = (uint32_t *) malloc(sizeof(int));
+			uint32_t *value_int = malloc(sizeof(int));
+			if (!value_int) {
+				ret = -ENOMEM;
+				goto cleanup;
+			}
+
 			allocArray[i] = value_int;
 			*value_int = strtoul((argv[i]) + 2, NULL, 16);
 
@@ -967,9 +982,14 @@ static int set_attribseq(sdp_session_t *session, uint32_t handle, uint16_t attri
 	} else
 		printf("Failed to create pSequenceHolder\n");
 
+cleanup:
+	if (ret == -ENOMEM)
+		printf("Memory allocation failed\n");
+
 	/* Cleanup */
 	for (i = 0; i < argc; i++)
-		free(allocArray[i]);
+		if (allocArray)
+			free(allocArray[i]);
 
 	free(dtdArray);
 	free(valueArray);
@@ -3292,6 +3312,7 @@ static int add_palmos(sdp_session_t *session, svc_info_t *si)
 	sdp_record_t record;
 	sdp_list_t *root, *svclass;
 	uuid_t root_uuid, svclass_uuid;
+	int err;
 
 	memset(&record, 0, sizeof(record));
 	record.handle = si->handle;
@@ -3304,7 +3325,12 @@ static int add_palmos(sdp_session_t *session, svc_info_t *si)
 	svclass = sdp_list_append(NULL, &svclass_uuid);
 	sdp_set_service_classes(&record, svclass);
 
-	if (sdp_device_record_register(session, &interface, &record, SDP_RECORD_PERSIST) < 0) {
+	err = sdp_device_record_register(session, &interface, &record,
+							SDP_RECORD_PERSIST);
+	sdp_list_free(root, NULL);
+	sdp_list_free(svclass, NULL);
+
+	if (err < 0) {
 		printf("Service Record registration failed\n");
 		return -1;
 	}

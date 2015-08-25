@@ -978,6 +978,11 @@ static void notify_mtu_change(void *data, void *user_data)
 	if (conn->device != device)
 		return;
 
+	if (!conn->app) {
+		error("gatt: can't notify mtu - no app registered for conn");
+		return;
+	}
+
 	switch (conn->app->type) {
 	case GATT_CLIENT:
 		notify_client_mtu_change(conn, true);
@@ -1564,7 +1569,7 @@ static void connect_cb(GIOChannel *io, GError *gerr, gpointer user_data)
 	if (cid == ATT_CID)
 		mtu = ATT_DEFAULT_LE_MTU;
 
-	attrib = g_attrib_new(io, mtu);
+	attrib = g_attrib_new(io, mtu, true);
 	if (!attrib) {
 		error("gatt: unable to create new GAttrib instance");
 		device_set_state(dev, DEVICE_DISCONNECTED);
@@ -1642,7 +1647,6 @@ reply:
 			/*
 			 * There is no ongoing bonding, lets search for primary
 			 * services
-			 *
 			 */
 			search_dev_for_srvc(conn, NULL);
 	}
@@ -1653,7 +1657,7 @@ reply:
 									&data);
 
 	/* For BR/EDR notify about MTU since it is not negotiable*/
-	if (cid != ATT_CID)
+	if (cid != ATT_CID && status == GATT_SUCCESS)
 		queue_foreach(app_connections, notify_mtu_change, dev);
 
 	device_unref(dev);
@@ -1972,6 +1976,7 @@ static bool trigger_connection(struct app_connection *conn, bool direct)
 		if (direct)
 			return connect_le(conn->device) == 0;
 
+		bt_gatt_add_autoconnect(conn->app->id, &conn->device->bdaddr);
 		return auto_connect_le(conn->device);
 	case DEVICE_CONNECTED:
 		notify_app_connect_status(conn, GATT_SUCCESS);

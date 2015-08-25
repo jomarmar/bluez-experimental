@@ -69,6 +69,7 @@ static void print_dev_list(int ctl, int flags)
 
 	if (ioctl(ctl, HCIGETDEVLIST, (void *) dl) < 0) {
 		perror("Can't get device list");
+		free(dl);
 		exit(1);
 	}
 
@@ -78,6 +79,8 @@ static void print_dev_list(int ctl, int flags)
 			continue;
 		print_dev_info(ctl, &di);
 	}
+
+	free(dl);
 }
 
 static void print_pkt_type(struct hci_dev_info *di)
@@ -960,6 +963,8 @@ static void cmd_class(int ctl, int hdev, char *opt)
 			printf("%s, %s\n", major_devices[cls[1] & 0x1f],
 				get_minor_device_name(cls[1] & 0x1f, cls[0] >> 2));
 	}
+
+	hci_close_dev(hdev);
 }
 
 static void cmd_voice(int ctl, int hdev, char *opt)
@@ -1020,6 +1025,8 @@ static void cmd_voice(int ctl, int hdev, char *opt)
 		}
 		printf("\tAir Coding Format: %s\n", acf[vs & 0x03]);
 	}
+
+	hci_close_dev(s);
 }
 
 static void cmd_delkey(int ctl, int hdev, char *opt)
@@ -1459,6 +1466,8 @@ static void cmd_inq_parms(int ctl, int hdev, char *opt)
 		printf("\tInquiry interval: %u slots (%.2f ms), window: %u slots (%.2f ms)\n",
 				interval, (float)interval * 0.625, window, (float)window * 0.625);
 	}
+
+	hci_close_dev(s);
 }
 
 static void cmd_page_parms(int ctl, int hdev, char *opt)
@@ -1530,6 +1539,8 @@ static void cmd_page_parms(int ctl, int hdev, char *opt)
 			interval, (float)interval * 0.625,
 			window, (float)window * 0.625);
 	}
+
+	hci_close_dev(s);
 }
 
 static void cmd_page_to(int ctl, int hdev, char *opt)
@@ -1594,6 +1605,8 @@ static void cmd_page_to(int ctl, int hdev, char *opt)
 		printf("\tPage timeout: %u slots (%.2f ms)\n",
 				timeout, (float)timeout * 0.625);
 	}
+
+	hci_close_dev(s);
 }
 
 static void cmd_afh_mode(int ctl, int hdev, char *opt)
@@ -1627,6 +1640,8 @@ static void cmd_afh_mode(int ctl, int hdev, char *opt)
 		print_dev_hdr(&di);
 		printf("\tAFH mode: %s\n", mode == 1 ? "Enabled" : "Disabled");
 	}
+
+	hci_close_dev(dd);
 }
 
 static void cmd_ssp_mode(int ctl, int hdev, char *opt)
@@ -1661,6 +1676,8 @@ static void cmd_ssp_mode(int ctl, int hdev, char *opt)
 		printf("\tSimple Pairing mode: %s\n",
 			mode == 1 ? "Enabled" : "Disabled");
 	}
+
+	hci_close_dev(dd);
 }
 
 static void print_rev_ericsson(int dd)
@@ -1787,6 +1804,9 @@ static void cmd_revision(int ctl, int hdev, char *opt)
 		printf("\tUnsupported manufacturer\n");
 		break;
 	}
+
+	hci_close_dev(dd);
+
 	return;
 }
 

@@ -630,6 +630,10 @@ static void client_ready_cb(bool success, uint8_t att_ecode, void *user_data)
 	if (context->data->step) {
 		const struct test_step *step = context->data->step;
 
+		/* Auto elevate security for test that don't expect error */
+		if (!step->expected_att_ecode)
+			bt_att_set_security(context->att, BT_ATT_SECURITY_AUTO);
+
 		step->func(context);
 		return;
 	}
@@ -647,7 +651,7 @@ static struct context *create_context(uint16_t mtu, gconstpointer data)
 	err = socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv);
 	g_assert(err == 0);
 
-	context->att = bt_att_new(sv[0]);
+	context->att = bt_att_new(sv[0], false);
 	g_assert(context->att);
 
 	switch (test_data->context_type) {
@@ -1002,7 +1006,7 @@ static void test_signed_write_seclevel(struct context *context)
 	g_assert(bt_att_set_local_key(context->att, key, local_counter,
 								context));
 
-	g_assert(bt_att_set_sec_level(context->att, BT_SECURITY_MEDIUM));
+	g_assert(bt_att_set_security(context->att, BT_ATT_SECURITY_MEDIUM));
 
 	g_assert(bt_gatt_client_write_without_response(context->client,
 							step->handle,
@@ -2687,6 +2691,14 @@ int main(int argc, char *argv[])
 			raw_pdu(0x0a, 0x03, 0x00),
 			raw_pdu(0x01, 0x0a, 0x03, 0x00, 0x05));
 
+	define_test_client("/TP/GAR/CL/BI-04-C/auto", test_client, service_db_1,
+			&test_read_1,
+			SERVICE_DATA_1_PDUS,
+			raw_pdu(0x0a, 0x03, 0x00),
+			raw_pdu(0x01, 0x0a, 0x03, 0x00, 0x05),
+			raw_pdu(0x0a, 0x03, 0x00),
+			raw_pdu(0x0b, 0x01, 0x02, 0x03));
+
 	define_test_client("/TP/GAR/CL/BI-05-C", test_client, service_db_1,
 			&test_read_6,
 			SERVICE_DATA_1_PDUS,
@@ -2881,7 +2893,7 @@ int main(int argc, char *argv[])
 			&test_long_read_1,
 			SERVICE_DATA_1_PDUS,
 			raw_pdu(0x0c, 0x03, 0x00, 0x00, 0x00),
-			raw_pdu(0x0b, 0x01, 0x02, 0x03));
+			raw_pdu(0x0d, 0x01, 0x02, 0x03));
 
 	define_test_client("/TP/GAR/CL/BV-04-C/512B", test_client, service_db_1,
 			&test_long_read_2,
@@ -3029,6 +3041,14 @@ int main(int argc, char *argv[])
 			raw_pdu(0x0c, 0x03, 0x00, 0x00, 0x00),
 			raw_pdu(0x01, 0x0c, 0x03, 0x00, 0x05));
 
+	define_test_client("/TP/GAR/CL/BI-16-C/auto", test_client, service_db_1,
+			&test_long_read_1,
+			SERVICE_DATA_1_PDUS,
+			raw_pdu(0x0c, 0x03, 0x00, 0x00, 0x00),
+			raw_pdu(0x01, 0x0c, 0x03, 0x00, 0x05),
+			raw_pdu(0x0c, 0x03, 0x00, 0x00, 0x00),
+			raw_pdu(0x0d, 0x01, 0x02, 0x03));
+
 	define_test_client("/TP/GAR/CL/BI-17-C", test_client, service_db_1,
 			&test_long_read_8,
 			SERVICE_DATA_1_PDUS,
@@ -3058,6 +3078,14 @@ int main(int argc, char *argv[])
 			SERVICE_DATA_1_PDUS,
 			raw_pdu(0x0e, 0x03, 0x00, 0x07, 0x00),
 			raw_pdu(0x01, 0x0e, 0x03, 0x00, 0x05));
+
+	define_test_client("/TP/GAR/CL/BI-21-C/auto", test_client, service_db_1,
+			&test_multiple_read_1,
+			SERVICE_DATA_1_PDUS,
+			raw_pdu(0x0e, 0x03, 0x00, 0x07, 0x00),
+			raw_pdu(0x01, 0x0e, 0x03, 0x00, 0x05),
+			raw_pdu(0x0e, 0x03, 0x00, 0x07, 0x00),
+			raw_pdu(0x0f, 0x01, 0x02, 0x03));
 
 	define_test_client("/TP/GAR/CL/BI-22-C", test_client, service_db_1,
 			&test_multiple_read_6,
@@ -3254,6 +3282,14 @@ int main(int argc, char *argv[])
 			raw_pdu(0x0a, 0x04, 0x00),
 			raw_pdu(0x01, 0x0a, 0x04, 0x00, 0x05));
 
+	define_test_client("/TP/GAR/CL/BI-26-C/auto", test_client, service_db_1,
+			&test_read_7,
+			SERVICE_DATA_1_PDUS,
+			raw_pdu(0x0a, 0x04, 0x00),
+			raw_pdu(0x01, 0x0a, 0x04, 0x00, 0x05),
+			raw_pdu(0x0a, 0x04, 0x00),
+			raw_pdu(0x0b, 0x01, 0x02, 0x03));
+
 	define_test_client("/TP/GAR/CL/BI-27-C", test_client, service_db_1,
 			&test_read_11,
 			SERVICE_DATA_1_PDUS,
@@ -3264,7 +3300,7 @@ int main(int argc, char *argv[])
 			&test_long_read_9,
 			SERVICE_DATA_1_PDUS,
 			raw_pdu(0x0c, 0x04, 0x00, 0x00, 0x00),
-			raw_pdu(0x0b, 0x01, 0x02, 0x03));
+			raw_pdu(0x0d, 0x01, 0x02, 0x03));
 
 	define_test_client("/TP/GAR/CL/BV-07-C/512B", test_client, service_db_1,
 			&test_long_read_10,
@@ -3406,6 +3442,14 @@ int main(int argc, char *argv[])
 			raw_pdu(0x0c, 0x04, 0x00, 0x00, 0x00),
 			raw_pdu(0x01, 0x0c, 0x04, 0x00, 0x05));
 
+	define_test_client("/TP/GAR/CL/BI-32-C/auto", test_client, service_db_1,
+			&test_long_read_9,
+			SERVICE_DATA_1_PDUS,
+			raw_pdu(0x0c, 0x04, 0x00, 0x00, 0x00),
+			raw_pdu(0x01, 0x0c, 0x04, 0x00, 0x05),
+			raw_pdu(0x0c, 0x04, 0x00, 0x00, 0x00),
+			raw_pdu(0x0d, 0x01, 0x02, 0x03));
+
 	define_test_client("/TP/GAR/CL/BI-33-C", test_client, service_db_1,
 			&test_long_read_15,
 			SERVICE_DATA_1_PDUS,
@@ -3470,6 +3514,14 @@ int main(int argc, char *argv[])
 			SERVICE_DATA_1_PDUS,
 			raw_pdu(0x12, 0x07, 0x00, 0x01, 0x02, 0x03),
 			raw_pdu(0x01, 0x12, 0x07, 0x00, 0x05));
+
+	define_test_client("/TP/GAW/CL/BI-05-C/auto", test_client, service_db_1,
+			&test_write_1,
+			SERVICE_DATA_1_PDUS,
+			raw_pdu(0x12, 0x07, 0x00, 0x01, 0x02, 0x03),
+			raw_pdu(0x01, 0x12, 0x07, 0x00, 0x05),
+			raw_pdu(0x12, 0x07, 0x00, 0x01, 0x02, 0x03),
+			raw_pdu(0x13));
 
 	define_test_client("/TP/GAW/CL/BI-06-C", test_client, service_db_1,
 			&test_write_6,
@@ -3891,6 +3943,16 @@ int main(int argc, char *argv[])
 			raw_pdu(0x18, 0x00),
 			raw_pdu(0x19));
 
+	define_test_client("/TP/GAW/CL/BI-18-C/auto", test_client, service_db_1,
+			&test_reliable_write_1,
+			SERVICE_DATA_1_PDUS,
+			raw_pdu(0x16, 0x07, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03),
+			raw_pdu(0x01, 0x16, 0x07, 0x00, 0x05),
+			raw_pdu(0x16, 0x07, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03),
+			raw_pdu(0x17, 0x07, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03),
+			raw_pdu(0x18, 0x01),
+			raw_pdu(0x19));
+
 	define_test_client("/TP/GAW/CL/BI-19-C", test_client, service_db_1,
 			&test_reliable_write_6,
 			SERVICE_DATA_1_PDUS,
@@ -3996,6 +4058,14 @@ int main(int argc, char *argv[])
 			SERVICE_DATA_1_PDUS,
 			raw_pdu(0x12, 0x08, 0x00, 0x01, 0x02, 0x03),
 			raw_pdu(0x01, 0x12, 0x08, 0x00, 0x05));
+
+	define_test_client("/TP/GAW/CL/BI-23-C/auto", test_client, service_db_1,
+			&test_write_7,
+			SERVICE_DATA_1_PDUS,
+			raw_pdu(0x12, 0x08, 0x00, 0x01, 0x02, 0x03),
+			raw_pdu(0x01, 0x12, 0x08, 0x00, 0x05),
+			raw_pdu(0x12, 0x08, 0x00, 0x01, 0x02, 0x03),
+			raw_pdu(0x13));
 
 	define_test_client("/TP/GAW/CL/BI-24-C", test_client, service_db_1,
 			&test_write_12,

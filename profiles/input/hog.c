@@ -83,6 +83,7 @@ struct hog_device {
 	struct gatt_primary	*hog_primary;
 	GSList			*reports;
 	struct bt_uhid		*uhid;
+	gboolean		uhid_created;
 	gboolean		has_report_id;
 	uint16_t		bcdhid;
 	uint8_t			bcountrycode;
@@ -98,6 +99,7 @@ struct hog_device {
 struct report {
 	uint8_t			id;
 	uint8_t			type;
+	uint16_t		ccc_handle;
 	guint			notifyid;
 	struct gatt_char	*decl;
 	struct hog_device	*hogdev;
@@ -150,30 +152,42 @@ static void report_ccc_written_cb(guint8 status, const guint8 *pdu,
 					guint16 plen, gpointer user_data)
 {
 	struct report *report = user_data;
-	struct hog_device *hogdev = report->hogdev;
 
 	if (status != 0) {
-		error("Write report characteristic descriptor failed: %s",
-							att_ecode2str(status));
+		error("Report 0x%04x CCC write failed: %s",
+				report->decl->handle, att_ecode2str(status));
 		return;
 	}
 
+	DBG("Report 0x%04x CCC written: notifications enabled",
+							report->decl->handle);
+}
+
+static void enable_report_notifications(struct report *report,
+							bool enable_on_device)
+{
+	struct hog_device *hogdev = report->hogdev;
+	uint8_t value[2];
+
+	if (!hogdev->uhid_created)
+		return;
+
+	if (!report->ccc_handle)
+		return;
+
+	/* Register callback for HoG report notifications */
 	report->notifyid = g_attrib_register(hogdev->attrib,
 					ATT_OP_HANDLE_NOTIFY,
 					report->decl->value_handle,
 					report_value_cb, report, NULL);
 
-	DBG("Report characteristic descriptor written: notifications enabled");
-}
+	if (!enable_on_device)
+		return;
 
-static void write_ccc(uint16_t handle, gpointer user_data)
-{
-	struct report *report = user_data;
-	struct hog_device *hogdev = report->hogdev;
-	uint8_t value[] = { 0x01, 0x00 };
-
-	gatt_write_char(hogdev->attrib, handle, value, sizeof(value),
-					report_ccc_written_cb, report);
+	/* Enable HoG report notifications on the HoG device */
+	put_le16(GATT_CLIENT_CHARAC_CFG_NOTIF_BIT, value);
+	gatt_write_char(hogdev->attrib, report->ccc_handle, value,
+				sizeof(value), report_ccc_written_cb, report);
 }
 
 static void report_reference_cb(guint8 status, const guint8 *pdu,
@@ -220,7 +234,8 @@ static void discover_descriptor_cb(uint8_t status, GSList *descs,
 		switch (desc->uuid16) {
 		case GATT_CLIENT_CHARAC_CFG_UUID:
 			report = user_data;
-			write_ccc(desc->handle, report);
+			report->ccc_handle = desc->handle;
+			enable_report_notifications(report, true);
 			break;
 		case GATT_REPORT_REFERENCE:
 			report = user_data;
@@ -304,7 +319,7 @@ static void external_report_reference_cb(guint8 status, const guint8 *pdu,
 	DBG("External report reference read, external report characteristic "
 						"UUID: 0x%04x", uuid16);
 	bt_uuid16_create(&uuid, uuid16);
-	gatt_discover_char(hogdev->attrib, 0x00, 0xff, &uuid,
+	gatt_discover_char(hogdev->attrib, 0x0001, 0xffff, &uuid,
 					external_service_char_cb, hogdev);
 }
 
@@ -616,6 +631,7 @@ static void report_map_read_cb(guint8 status, const guint8 *pdu, guint16 plen,
 	ssize_t vlen;
 	char itemstr[20]; /* 5x3 (data) + 4 (continuation) + 1 (null) */
 	int i, err;
+	GSList *l;
 
 	if (status != 0) {
 		error("Report Map read failed: %s", att_ecode2str(status));
@@ -685,6 +701,14 @@ static void report_map_read_cb(guint8 status, const guint8 *pdu, guint16 plen,
 	bt_uhid_register(hogdev->uhid, UHID_OUTPUT, forward_report, hogdev);
 	bt_uhid_register(hogdev->uhid, UHID_SET_REPORT, set_report, hogdev);
 	bt_uhid_register(hogdev->uhid, UHID_GET_REPORT, get_report, hogdev);
+
+	hogdev->uhid_created = TRUE;
+
+	for (l = hogdev->reports; l; l = l->next) {
+		struct report *r = l->data;
+
+		enable_report_notifications(r, true);
+	}
 }
 
 static void info_read_cb(guint8 status, const guint8 *pdu, guint16 plen,
@@ -834,10 +858,7 @@ static void attio_connected_cb(GAttrib *attrib, gpointer user_data)
 	for (l = hogdev->reports; l; l = l->next) {
 		struct report *r = l->data;
 
-		r->notifyid = g_attrib_register(hogdev->attrib,
-					ATT_OP_HANDLE_NOTIFY,
-					r->decl->value_handle,
-					report_value_cb, r, NULL);
+		enable_report_notifications(r, false);
 	}
 }
 

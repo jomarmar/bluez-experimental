@@ -601,12 +601,16 @@ static bool discover_descs(struct discovery_op *op, bool *discovering)
 							chrc_data->value_handle)
 			goto failed;
 
-		desc_start = chrc_data->value_handle + 1;
-
-		if (desc_start > chrc_data->end_handle) {
+		/*
+		 * check for descriptors presence, before initializing the
+		 * desc_handle and avoid integer overflow during desc_handle
+		 * intialization.
+		 */
+		if (chrc_data->value_handle >= chrc_data->end_handle) {
 			free(chrc_data);
 			continue;
 		}
+		desc_start = chrc_data->value_handle + 1;
 
 		client->discovery_req = bt_gatt_discover_descriptors(
 							client->att, desc_start,
@@ -892,13 +896,21 @@ static void discover_secondary_cb(bool success, uint8_t att_ecode,
 		attr = gatt_db_insert_service(client->db, start, &uuid, false,
 							end - start + 1);
 		if (!attr) {
-			util_debug(client->debug_callback, client->debug_data,
-						"Failed to create service");
-			success = false;
-			goto done;
+			gatt_db_clear_range(client->db, start, end);
+			attr = gatt_db_insert_service(client->db, start, &uuid,
+							false, end - start + 1);
+			if (!attr) {
+				util_debug(client->debug_callback,
+						client->debug_data,
+						"Failed to store service");
+				success = false;
+				goto done;
+			}
 		}
 
-		queue_push_tail(op->pending_svcs, attr);
+		/* Skip if service already active */
+		if (!gatt_db_service_get_active(attr))
+			queue_push_tail(op->pending_svcs, attr);
 	}
 
 next:
@@ -906,8 +918,10 @@ next:
 	attr = queue_pop_head(op->pending_svcs);
 
 	/* Complete with success if queue is empty */
-	if (!attr)
+	if (!attr) {
+		success = true;
 		goto done;
+	}
 
 	/*
 	 * Store the service in the tmp queue to be reused during
@@ -957,6 +971,11 @@ static void discover_primary_cb(bool success, uint8_t att_ecode,
 		util_debug(client->debug_callback, client->debug_data,
 					"Primary service discovery failed."
 					" ATT ECODE: 0x%02x", att_ecode);
+		/* Reset error in case of not found */
+		if (BT_ATT_ERROR_ATTRIBUTE_NOT_FOUND) {
+			success = true;
+			att_ecode = 0;
+		}
 		goto secondary;
 	}
 
@@ -981,16 +1000,33 @@ static void discover_primary_cb(bool success, uint8_t att_ecode,
 		attr = gatt_db_insert_service(client->db, start, &uuid, true,
 							end - start + 1);
 		if (!attr) {
-			util_debug(client->debug_callback, client->debug_data,
+			gatt_db_clear_range(client->db, start, end);
+			attr = gatt_db_insert_service(client->db, start, &uuid,
+							true, end - start + 1);
+			if (!attr) {
+				util_debug(client->debug_callback,
+						client->debug_data,
 						"Failed to store service");
-			success = false;
-			goto done;
+				success = false;
+				goto done;
+			}
 		}
 
-		queue_push_tail(op->pending_svcs, attr);
+		/* Skip if service already active */
+		if (!gatt_db_service_get_active(attr))
+			queue_push_tail(op->pending_svcs, attr);
 	}
 
 secondary:
+	/*
+	 * Version 4.2 [Vol 1, Part A] page 101:
+	 * A secondary service is a service that provides auxiliary
+	 * functionality of a device and is referenced from at least one
+	 * primary service on the device.
+	 */
+	if (queue_isempty(op->pending_svcs))
+		goto done;
+
 	/* Discover secondary services */
 	client->discovery_req = bt_gatt_discover_secondary_services(client->att,
 						NULL, op->start, op->end,
@@ -1013,10 +1049,11 @@ done:
 static void notify_client_ready(struct bt_gatt_client *client, bool success,
 							uint8_t att_ecode)
 {
-	if (!client->ready_callback)
+	if (!client->ready_callback || client->ready)
 		return;
 
 	bt_gatt_client_ref(client);
+	client->ready = success;
 	client->ready_callback(success, att_ecode, client->ready_data);
 	bt_gatt_client_unref(client);
 }
@@ -1034,6 +1071,15 @@ static void exchange_mtu_cb(bool success, uint8_t att_ecode, void *user_data)
 				"MTU Exchange failed. ATT ECODE: 0x%02x",
 				att_ecode);
 
+		/*
+		 * BLUETOOTH SPECIFICATION Version 4.2 [Vol 3, Part G] page 546
+		 * If the Error Response is sent by the server with the Error
+		 * Code set to RequestNot Supported , the Attribute Opcode is
+		 * not supported and the default MTU shall be used.
+		 */
+		if (att_ecode == BT_ATT_ERROR_REQUEST_NOT_SUPPORTED)
+			goto discover;
+
 		client->in_init = false;
 		notify_client_ready(client, success, att_ecode);
 
@@ -1044,12 +1090,7 @@ static void exchange_mtu_cb(bool success, uint8_t att_ecode, void *user_data)
 					"MTU exchange complete, with MTU: %u",
 					bt_att_get_mtu(client->att));
 
-	/* Don't do discovery if the database was pre-populated */
-	if (!gatt_db_isempty(client->db)) {
-		op->complete_func(op, true, 0);
-		return;
-	}
-
+discover:
 	client->discovery_req = bt_gatt_discover_all_primary_services(
 							client->att, NULL,
 							discover_primary_cb,
@@ -1073,299 +1114,11 @@ struct service_changed_op {
 	uint16_t end_handle;
 };
 
-static void service_changed_reregister_cb(uint16_t att_ecode, void *user_data)
-{
-	struct bt_gatt_client *client = user_data;
-
-	if (!att_ecode) {
-		util_debug(client->debug_callback, client->debug_data,
-			"Re-registered handler for \"Service Changed\" after "
-			"change in GATT service");
-		client->svc_chngd_registered = true;
-		return;
-	}
-
-	util_debug(client->debug_callback, client->debug_data,
-		"Failed to register handler for \"Service Changed\"");
-	client->svc_chngd_ind_id = 0;
-}
-
 static void process_service_changed(struct bt_gatt_client *client,
 							uint16_t start_handle,
 							uint16_t end_handle);
 static void service_changed_cb(uint16_t value_handle, const uint8_t *value,
 					uint16_t length, void *user_data);
-
-static void get_first_attribute(struct gatt_db_attribute *attrib,
-								void *user_data)
-{
-	struct gatt_db_attribute **stored = user_data;
-
-	if (*stored)
-		return;
-
-	*stored = attrib;
-}
-
-static void service_changed_complete(struct discovery_op *op, bool success,
-							uint8_t att_ecode)
-{
-	struct bt_gatt_client *client = op->client;
-	struct service_changed_op *next_sc_op;
-	uint16_t start_handle = op->start;
-	uint16_t end_handle = op->end;
-	struct gatt_db_attribute *attr = NULL;
-	bt_uuid_t uuid;
-
-	client->in_svc_chngd = false;
-
-	if (!success && att_ecode != BT_ATT_ERROR_ATTRIBUTE_NOT_FOUND) {
-		util_debug(client->debug_callback, client->debug_data,
-			"Failed to discover services within changed range - "
-			"error: 0x%02x", att_ecode);
-
-		gatt_db_clear_range(client->db, start_handle, end_handle);
-	}
-
-	/* Notify the upper layer of changed services */
-	if (client->svc_chngd_callback)
-		client->svc_chngd_callback(start_handle, end_handle,
-							client->svc_chngd_data);
-
-	/* Process any queued events */
-	next_sc_op = queue_pop_head(client->svc_chngd_queue);
-	if (next_sc_op) {
-		process_service_changed(client, next_sc_op->start_handle,
-							next_sc_op->end_handle);
-		free(next_sc_op);
-		return;
-	}
-
-	bt_uuid16_create(&uuid, SVC_CHNGD_UUID);
-
-	gatt_db_find_by_type(client->db, start_handle, end_handle, &uuid,
-						get_first_attribute, &attr);
-	if (!attr)
-		return;
-
-	/* The GATT service was modified. Re-register the handler for
-	 * indications from the "Service Changed" characteristic.
-	 */
-	client->svc_chngd_registered = false;
-	client->svc_chngd_ind_id = bt_gatt_client_register_notify(client,
-					gatt_db_attribute_get_handle(attr),
-					service_changed_reregister_cb,
-					service_changed_cb,
-					client, NULL);
-	if (client->svc_chngd_ind_id)
-		return;
-
-	util_debug(client->debug_callback, client->debug_data,
-		"Failed to re-register handler for \"Service Changed\"");
-}
-
-static void service_changed_failure(struct discovery_op *op)
-{
-	struct bt_gatt_client *client = op->client;
-
-	gatt_db_clear_range(client->db, op->start, op->end);
-}
-
-static void process_service_changed(struct bt_gatt_client *client,
-							uint16_t start_handle,
-							uint16_t end_handle)
-{
-	struct discovery_op *op;
-
-	/* Invalidate and remove all effected notify callbacks */
-	gatt_client_remove_all_notify_in_range(client, start_handle,
-								end_handle);
-	gatt_client_remove_notify_chrcs_in_range(client, start_handle,
-								end_handle);
-
-	/* Remove all services that overlap the modified range since we'll
-	 * rediscover them
-	 */
-	gatt_db_clear_range(client->db, start_handle, end_handle);
-
-	op = discovery_op_create(client, start_handle, end_handle,
-						service_changed_complete,
-						service_changed_failure);
-	if (!op)
-		goto fail;
-
-	client->discovery_req = bt_gatt_discover_primary_services(client->att,
-						NULL, start_handle, end_handle,
-						discover_primary_cb,
-						discovery_op_ref(op),
-						discovery_op_unref);
-	if (client->discovery_req) {
-		client->in_svc_chngd = true;
-		return;
-	}
-
-	discovery_op_free(op);
-
-fail:
-	util_debug(client->debug_callback, client->debug_data,
-					"Failed to initiate service discovery"
-					" after Service Changed");
-}
-
-static void service_changed_cb(uint16_t value_handle, const uint8_t *value,
-					uint16_t length, void *user_data)
-{
-	struct bt_gatt_client *client = user_data;
-	struct service_changed_op *op;
-	uint16_t start, end;
-
-	if (length != 4)
-		return;
-
-	start = get_le16(value);
-	end = get_le16(value + 2);
-
-	if (start > end) {
-		util_debug(client->debug_callback, client->debug_data,
-			"Service Changed received with invalid handles");
-		return;
-	}
-
-	util_debug(client->debug_callback, client->debug_data,
-			"Service Changed received - start: 0x%04x end: 0x%04x",
-			start, end);
-
-	if (!client->in_svc_chngd) {
-		process_service_changed(client, start, end);
-		return;
-	}
-
-	op = new0(struct service_changed_op, 1);
-	if (!op)
-		return;
-
-	op->start_handle = start;
-	op->end_handle = end;
-
-	queue_push_tail(client->svc_chngd_queue, op);
-}
-
-static void service_changed_register_cb(uint16_t att_ecode, void *user_data)
-{
-	bool success;
-	struct bt_gatt_client *client = user_data;
-
-	if (att_ecode) {
-		util_debug(client->debug_callback, client->debug_data,
-			"Failed to register handler for \"Service Changed\"");
-		success = false;
-		client->svc_chngd_ind_id = 0;
-		goto done;
-	}
-
-	client->svc_chngd_registered = true;
-	client->ready = true;
-	success = true;
-	util_debug(client->debug_callback, client->debug_data,
-			"Registered handler for \"Service Changed\": %u",
-			client->svc_chngd_ind_id);
-
-done:
-	notify_client_ready(client, success, att_ecode);
-}
-
-static void init_complete(struct discovery_op *op, bool success,
-							uint8_t att_ecode)
-{
-	struct bt_gatt_client *client = op->client;
-	struct gatt_db_attribute *attr = NULL;
-	bt_uuid_t uuid;
-
-	client->in_init = false;
-
-	if (!success)
-		goto fail;
-
-	bt_uuid16_create(&uuid, SVC_CHNGD_UUID);
-
-	gatt_db_find_by_type(client->db, 0x0001, 0xffff, &uuid,
-						get_first_attribute, &attr);
-	if (!attr) {
-		client->ready = true;
-		goto done;
-	}
-
-	/* Register an indication handler for the "Service Changed"
-	 * characteristic and report ready only if the handler is registered
-	 * successfully. Temporarily set "ready" to true so that we can register
-	 * the handler using the existing framework.
-	 */
-	client->ready = true;
-	client->svc_chngd_ind_id = bt_gatt_client_register_notify(client,
-					gatt_db_attribute_get_handle(attr),
-					service_changed_register_cb,
-					service_changed_cb,
-					client, NULL);
-
-	if (!client->svc_chngd_registered)
-		client->ready = false;
-
-	if (client->svc_chngd_ind_id)
-		return;
-
-	util_debug(client->debug_callback, client->debug_data,
-			"Failed to register handler for \"Service Changed\"");
-	success = false;
-
-fail:
-	util_debug(client->debug_callback, client->debug_data,
-			"Failed to initialize gatt-client");
-
-	op->success = false;
-
-done:
-	notify_client_ready(client, success, att_ecode);
-}
-
-static void init_fail(struct discovery_op *op)
-{
-	struct bt_gatt_client *client = op->client;
-
-	gatt_db_clear(client->db);
-}
-
-static bool gatt_client_init(struct bt_gatt_client *client, uint16_t mtu)
-{
-	struct discovery_op *op;
-
-	if (client->in_init || client->ready)
-		return false;
-
-	op = discovery_op_create(client, 0x0001, 0xffff, init_complete,
-								init_fail);
-	if (!op)
-		return false;
-
-	/* Configure the MTU */
-	client->mtu_req_id = bt_gatt_exchange_mtu(client->att,
-						MAX(BT_ATT_DEFAULT_LE_MTU, mtu),
-						exchange_mtu_cb,
-						discovery_op_ref(op),
-						discovery_op_unref);
-	if (!client->mtu_req_id) {
-		discovery_op_free(op);
-		return false;
-	}
-
-	client->in_init = true;
-
-	return true;
-}
-
-struct pdu_data {
-	const void *pdu;
-	uint16_t length;
-};
 
 static void complete_notify_request(void *data)
 {
@@ -1464,6 +1217,345 @@ static void enable_ccc_callback(uint8_t opcode, const void *pdu,
 
 	bt_gatt_client_unref(notify_data->client);
 }
+
+static bool match_notify_chrc_value_handle(const void *a, const void *b)
+{
+	const struct notify_chrc *chrc = a;
+	uint16_t value_handle = PTR_TO_UINT(b);
+
+	return chrc->value_handle == value_handle;
+}
+
+static unsigned int register_notify(struct bt_gatt_client *client,
+				uint16_t handle,
+				bt_gatt_client_register_callback_t callback,
+				bt_gatt_client_notify_callback_t notify,
+				void *user_data,
+				bt_gatt_client_destroy_func_t destroy)
+{
+	struct notify_data *notify_data;
+	struct notify_chrc *chrc = NULL;
+
+	/* Check if a characteristic ref count has been started already */
+	chrc = queue_find(client->notify_chrcs, match_notify_chrc_value_handle,
+						UINT_TO_PTR(handle));
+
+	if (!chrc) {
+		/*
+		 * Create an entry if the characteristic is known and has a CCC
+		 * descriptor.
+		 */
+		chrc = notify_chrc_create(client, handle);
+		if (!chrc)
+			return 0;
+	}
+
+	/* Fail if we've hit the maximum allowed notify sessions */
+	if (chrc->notify_count == INT_MAX)
+		return 0;
+
+	notify_data = new0(struct notify_data, 1);
+	if (!notify_data)
+		return 0;
+
+	notify_data->client = client;
+	notify_data->ref_count = 1;
+	notify_data->chrc = chrc;
+	notify_data->callback = callback;
+	notify_data->notify = notify;
+	notify_data->user_data = user_data;
+	notify_data->destroy = destroy;
+
+	/* Add the handler to the bt_gatt_client's general list */
+	queue_push_tail(client->notify_list, notify_data);
+
+	/* Assign an ID to the handler. */
+	if (client->next_reg_id < 1)
+		client->next_reg_id = 1;
+
+	notify_data->id = client->next_reg_id++;
+
+	/*
+	 * If a write to the CCC descriptor is in progress, then queue this
+	 * request.
+	 */
+	if (chrc->ccc_write_id) {
+		queue_push_tail(chrc->reg_notify_queue, notify_data);
+		return notify_data->id;
+	}
+
+	/*
+	 * If the ref count is not zero, then notifications are already enabled.
+	 */
+	if (chrc->notify_count > 0 || !chrc->ccc_handle) {
+		complete_notify_request(notify_data);
+		return notify_data->id;
+	}
+
+	/* Write to the CCC descriptor */
+	if (!notify_data_write_ccc(notify_data, true, enable_ccc_callback)) {
+		queue_remove(client->notify_list, notify_data);
+		free(notify_data);
+		return 0;
+	}
+
+	return notify_data->id;
+}
+
+static void get_first_attribute(struct gatt_db_attribute *attrib,
+								void *user_data)
+{
+	struct gatt_db_attribute **stored = user_data;
+
+	if (*stored)
+		return;
+
+	*stored = attrib;
+}
+
+static void service_changed_register_cb(uint16_t att_ecode, void *user_data)
+{
+	bool success;
+	struct bt_gatt_client *client = user_data;
+
+	if (att_ecode) {
+		util_debug(client->debug_callback, client->debug_data,
+			"Failed to register handler for \"Service Changed\"");
+		success = false;
+		client->svc_chngd_ind_id = 0;
+		goto done;
+	}
+
+	client->svc_chngd_registered = true;
+	success = true;
+	util_debug(client->debug_callback, client->debug_data,
+			"Registered handler for \"Service Changed\": %u",
+			client->svc_chngd_ind_id);
+
+done:
+	notify_client_ready(client, success, att_ecode);
+}
+
+static bool register_service_changed(struct bt_gatt_client *client)
+{
+	bt_uuid_t uuid;
+	struct gatt_db_attribute *attr = NULL;
+
+	bt_uuid16_create(&uuid, SVC_CHNGD_UUID);
+
+	if (client->svc_chngd_ind_id)
+		return true;
+
+	gatt_db_find_by_type(client->db, 0x0001, 0xffff, &uuid,
+						get_first_attribute, &attr);
+	if (!attr)
+		return true;
+
+	/*
+	 * Register an indication handler for the "Service Changed"
+	 * characteristic and report ready only if the handler is registered
+	 * successfully.
+	 */
+	client->svc_chngd_ind_id = register_notify(client,
+					gatt_db_attribute_get_handle(attr),
+					service_changed_register_cb,
+					service_changed_cb,
+					client, NULL);
+
+	return client->svc_chngd_ind_id ? true : false;
+}
+
+static void service_changed_complete(struct discovery_op *op, bool success,
+							uint8_t att_ecode)
+{
+	struct bt_gatt_client *client = op->client;
+	struct service_changed_op *next_sc_op;
+	uint16_t start_handle = op->start;
+	uint16_t end_handle = op->end;
+
+	client->in_svc_chngd = false;
+
+	if (!success && att_ecode != BT_ATT_ERROR_ATTRIBUTE_NOT_FOUND) {
+		util_debug(client->debug_callback, client->debug_data,
+			"Failed to discover services within changed range - "
+			"error: 0x%02x", att_ecode);
+
+		gatt_db_clear_range(client->db, start_handle, end_handle);
+	}
+
+	/* Notify the upper layer of changed services */
+	if (client->svc_chngd_callback)
+		client->svc_chngd_callback(start_handle, end_handle,
+							client->svc_chngd_data);
+
+	/* Process any queued events */
+	next_sc_op = queue_pop_head(client->svc_chngd_queue);
+	if (next_sc_op) {
+		process_service_changed(client, next_sc_op->start_handle,
+							next_sc_op->end_handle);
+		free(next_sc_op);
+		return;
+	}
+
+	if (register_service_changed(client))
+		return;
+
+	util_debug(client->debug_callback, client->debug_data,
+		"Failed to re-register handler for \"Service Changed\"");
+}
+
+static void service_changed_failure(struct discovery_op *op)
+{
+	struct bt_gatt_client *client = op->client;
+
+	gatt_db_clear_range(client->db, op->start, op->end);
+}
+
+static void process_service_changed(struct bt_gatt_client *client,
+							uint16_t start_handle,
+							uint16_t end_handle)
+{
+	struct discovery_op *op;
+
+	/* Invalidate and remove all effected notify callbacks */
+	gatt_client_remove_all_notify_in_range(client, start_handle,
+								end_handle);
+	gatt_client_remove_notify_chrcs_in_range(client, start_handle,
+								end_handle);
+
+	/* Remove all services that overlap the modified range since we'll
+	 * rediscover them
+	 */
+	gatt_db_clear_range(client->db, start_handle, end_handle);
+
+	op = discovery_op_create(client, start_handle, end_handle,
+						service_changed_complete,
+						service_changed_failure);
+	if (!op)
+		goto fail;
+
+	client->discovery_req = bt_gatt_discover_primary_services(client->att,
+						NULL, start_handle, end_handle,
+						discover_primary_cb,
+						discovery_op_ref(op),
+						discovery_op_unref);
+	if (client->discovery_req) {
+		client->in_svc_chngd = true;
+		return;
+	}
+
+	discovery_op_free(op);
+
+fail:
+	util_debug(client->debug_callback, client->debug_data,
+					"Failed to initiate service discovery"
+					" after Service Changed");
+}
+
+static void service_changed_cb(uint16_t value_handle, const uint8_t *value,
+					uint16_t length, void *user_data)
+{
+	struct bt_gatt_client *client = user_data;
+	struct service_changed_op *op;
+	uint16_t start, end;
+
+	if (length != 4)
+		return;
+
+	start = get_le16(value);
+	end = get_le16(value + 2);
+
+	if (start > end) {
+		util_debug(client->debug_callback, client->debug_data,
+			"Service Changed received with invalid handles");
+		return;
+	}
+
+	util_debug(client->debug_callback, client->debug_data,
+			"Service Changed received - start: 0x%04x end: 0x%04x",
+			start, end);
+
+	if (!client->in_svc_chngd) {
+		process_service_changed(client, start, end);
+		return;
+	}
+
+	op = new0(struct service_changed_op, 1);
+	if (!op)
+		return;
+
+	op->start_handle = start;
+	op->end_handle = end;
+
+	queue_push_tail(client->svc_chngd_queue, op);
+}
+
+static void init_complete(struct discovery_op *op, bool success,
+							uint8_t att_ecode)
+{
+	struct bt_gatt_client *client = op->client;
+
+	client->in_init = false;
+
+	if (!success)
+		goto fail;
+
+	if (register_service_changed(client))
+		goto done;
+
+	util_debug(client->debug_callback, client->debug_data,
+			"Failed to register handler for \"Service Changed\"");
+	success = false;
+
+fail:
+	util_debug(client->debug_callback, client->debug_data,
+			"Failed to initialize gatt-client");
+
+	op->success = false;
+
+done:
+	notify_client_ready(client, success, att_ecode);
+}
+
+static void init_fail(struct discovery_op *op)
+{
+	struct bt_gatt_client *client = op->client;
+
+	gatt_db_clear(client->db);
+}
+
+static bool gatt_client_init(struct bt_gatt_client *client, uint16_t mtu)
+{
+	struct discovery_op *op;
+
+	if (client->in_init || client->ready)
+		return false;
+
+	op = discovery_op_create(client, 0x0001, 0xffff, init_complete,
+								init_fail);
+	if (!op)
+		return false;
+
+	/* Configure the MTU */
+	client->mtu_req_id = bt_gatt_exchange_mtu(client->att,
+						MAX(BT_ATT_DEFAULT_LE_MTU, mtu),
+						exchange_mtu_cb,
+						discovery_op_ref(op),
+						discovery_op_unref);
+	if (!client->mtu_req_id) {
+		discovery_op_free(op);
+		return false;
+	}
+
+	client->in_init = true;
+
+	return true;
+}
+
+struct pdu_data {
+	const void *pdu;
+	uint16_t length;
+};
 
 static void disable_ccc_callback(uint8_t opcode, const void *pdu,
 					uint16_t length, void *user_data)
@@ -2217,7 +2309,7 @@ unsigned int bt_gatt_client_write_without_response(
 
 	/* Only use signed write if unencrypted */
 	if (signed_write) {
-		security = bt_att_get_sec_level(client->att);
+		security = bt_att_get_security(client->att);
 		op = security > BT_SECURITY_LOW ?  BT_ATT_OP_WRITE_CMD :
 						BT_ATT_OP_SIGNED_WRITE_CMD;
 	} else
@@ -2888,14 +2980,6 @@ unsigned int bt_gatt_client_write_execute(struct bt_gatt_client *client,
 	return id;
 }
 
-static bool match_notify_chrc_value_handle(const void *a, const void *b)
-{
-	const struct notify_chrc *chrc = a;
-	uint16_t value_handle = PTR_TO_UINT(b);
-
-	return chrc->value_handle == value_handle;
-}
-
 unsigned int bt_gatt_client_register_notify(struct bt_gatt_client *client,
 				uint16_t chrc_value_handle,
 				bt_gatt_client_register_callback_t callback,
@@ -2903,79 +2987,14 @@ unsigned int bt_gatt_client_register_notify(struct bt_gatt_client *client,
 				void *user_data,
 				bt_gatt_client_destroy_func_t destroy)
 {
-	struct notify_data *notify_data;
-	struct notify_chrc *chrc = NULL;
-
 	if (!client || !client->db || !chrc_value_handle || !callback)
 		return 0;
 
 	if (!bt_gatt_client_is_ready(client) || client->in_svc_chngd)
 		return 0;
 
-	/* Check if a characteristic ref count has been started already */
-	chrc = queue_find(client->notify_chrcs, match_notify_chrc_value_handle,
-						UINT_TO_PTR(chrc_value_handle));
-
-	if (!chrc) {
-		/*
-		 * Create an entry if the characteristic is known and has a CCC
-		 * descriptor.
-		 */
-		chrc = notify_chrc_create(client, chrc_value_handle);
-		if (!chrc)
-			return 0;
-	}
-
-	/* Fail if we've hit the maximum allowed notify sessions */
-	if (chrc->notify_count == INT_MAX)
-		return 0;
-
-	notify_data = new0(struct notify_data, 1);
-	if (!notify_data)
-		return 0;
-
-	notify_data->client = client;
-	notify_data->ref_count = 1;
-	notify_data->chrc = chrc;
-	notify_data->callback = callback;
-	notify_data->notify = notify;
-	notify_data->user_data = user_data;
-	notify_data->destroy = destroy;
-
-	/* Add the handler to the bt_gatt_client's general list */
-	queue_push_tail(client->notify_list, notify_data);
-
-	/* Assign an ID to the handler. */
-	if (client->next_reg_id < 1)
-		client->next_reg_id = 1;
-
-	notify_data->id = client->next_reg_id++;
-
-	/*
-	 * If a write to the CCC descriptor is in progress, then queue this
-	 * request.
-	 */
-	if (chrc->ccc_write_id) {
-		queue_push_tail(chrc->reg_notify_queue, notify_data);
-		return notify_data->id;
-	}
-
-	/*
-	 * If the ref count is not zero, then notifications are already enabled.
-	 */
-	if (chrc->notify_count > 0 || !chrc->ccc_handle) {
-		complete_notify_request(notify_data);
-		return notify_data->id;
-	}
-
-	/* Write to the CCC descriptor */
-	if (!notify_data_write_ccc(notify_data, true, enable_ccc_callback)) {
-		queue_remove(client->notify_list, notify_data);
-		free(notify_data);
-		return 0;
-	}
-
-	return notify_data->id;
+	return register_notify(client, chrc_value_handle, callback, notify,
+							user_data, destroy);
 }
 
 bool bt_gatt_client_unregister_notify(struct bt_gatt_client *client,
@@ -2998,19 +3017,18 @@ bool bt_gatt_client_unregister_notify(struct bt_gatt_client *client,
 	return true;
 }
 
-bool bt_gatt_client_set_sec_level(struct bt_gatt_client *client,
-								int level)
+bool bt_gatt_client_set_security(struct bt_gatt_client *client, int level)
 {
 	if (!client)
 		return false;
 
-	return bt_att_set_sec_level(client->att, level);
+	return bt_att_set_security(client->att, level);
 }
 
-int bt_gatt_client_get_sec_level(struct bt_gatt_client *client)
+int bt_gatt_client_get_security(struct bt_gatt_client *client)
 {
 	if (!client)
 		return -1;
 
-	return bt_att_get_sec_level(client->att);
+	return bt_att_get_security(client->att);
 }

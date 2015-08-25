@@ -47,6 +47,11 @@
 #define GET_PKT_TYPE(type) (type & 0x7f)
 #define GET_EXTENSION(type) (type & 0x80)
 
+/* BNEP Extension Type */
+#define BNEP_EXTENSION_CONTROL		0x00
+
+#define BNEP_CONTROL			0x01
+
 uint16_t proto = 0x0000;
 
 struct bnep_frame {
@@ -95,19 +100,167 @@ static bool bnep_general(struct bnep_frame *bnep_frame,
 
 }
 
+static bool cmd_nt_understood(struct bnep_frame *bnep_frame, uint8_t indent)
+{
+	struct l2cap_frame *frame = &bnep_frame->l2cap_frame;
+	uint8_t ptype;
+
+	if (!l2cap_frame_get_u8(frame, &ptype))
+		return false;
+
+	print_field("%*cType: 0x%02x ", indent, ' ', ptype);
+
+	return true;
+}
+
+static bool setup_conn_req(struct bnep_frame *bnep_frame, uint8_t indent)
+{
+
+	struct l2cap_frame *frame = &bnep_frame->l2cap_frame;
+	uint8_t uuid_size;
+	uint32_t src_uuid = 0, dst_uuid = 0;
+
+	if (!l2cap_frame_get_u8(frame, &uuid_size))
+		return false;
+
+	print_field("%*cSize: 0x%02x ", indent, ' ', uuid_size);
+
+	switch (uuid_size) {
+	case 2:
+		if (!l2cap_frame_get_be16(frame, (uint16_t *) &dst_uuid))
+			return false;
+
+		if (!l2cap_frame_get_be16(frame, (uint16_t *) &src_uuid))
+			return false;
+		break;
+	case 4:
+		if (!l2cap_frame_get_be32(frame, &dst_uuid))
+			return false;
+
+		if (!l2cap_frame_get_be32(frame, &src_uuid))
+			return false;
+		break;
+	case 16:
+		if (!l2cap_frame_get_be32(frame, &dst_uuid))
+			return false;
+
+		l2cap_frame_pull(frame, frame, 12);
+
+		if (!l2cap_frame_get_be32(frame, &src_uuid))
+			return false;
+
+		l2cap_frame_pull(frame, frame, 12);
+		break;
+	default:
+		l2cap_frame_pull(frame, frame, (uuid_size * 2));
+		return true;
+	}
+
+	print_field("%*cDst: 0x%x(%s)", indent, ' ', dst_uuid,
+						uuid32_to_str(dst_uuid));
+	print_field("%*cSrc: 0x%x(%s)", indent, ' ', src_uuid,
+						uuid32_to_str(src_uuid));
+	return true;
+}
+
+static const char *value2str(uint16_t value)
+{
+	switch (value) {
+	case 0x00:
+		return "Operation Successful";
+	case 0x01:
+		return "Operation Failed - Invalid Dst Srv UUID";
+	case 0x02:
+		return "Operation Failed - Invalid Src Srv UUID";
+	case 0x03:
+		return "Operation Failed - Invalid Srv UUID size";
+	case 0x04:
+		return "Operation Failed - Conn not allowed";
+	default:
+		return "Unknown";
+	}
+}
+
+static bool print_rsp_msg(struct bnep_frame *bnep_frame, uint8_t indent)
+{
+	struct l2cap_frame *frame = &bnep_frame->l2cap_frame;
+	uint16_t rsp_msg;
+
+	if (!l2cap_frame_get_be16(frame, &rsp_msg))
+		return false;
+
+	print_field("%*cRsp msg: %s(0x%04x) ", indent, ' ',
+					value2str(rsp_msg), rsp_msg);
+
+	return true;
+}
+
+static bool filter_nettype_req(struct bnep_frame *bnep_frame, uint8_t indent)
+{
+	struct l2cap_frame *frame = &bnep_frame->l2cap_frame;
+	uint16_t length, start_range, end_range;
+	int i;
+
+	if (!l2cap_frame_get_be16(frame, &length))
+		return false;
+
+	print_field("%*cLength: 0x%04x", indent, ' ', length);
+
+	for (i = 0; i < length / 4; i++) {
+
+		if (!l2cap_frame_get_be16(frame, &start_range))
+			return false;
+
+		if (!l2cap_frame_get_be16(frame, &end_range))
+			return false;
+
+		print_field("%*c0x%04x - 0x%04x", indent, ' ',
+						start_range, end_range);
+	}
+
+	return true;
+}
+
+static bool filter_multaddr_req(struct bnep_frame *bnep_frame, uint8_t indent)
+{
+	struct l2cap_frame *frame = &bnep_frame->l2cap_frame;
+	uint16_t length;
+	char start_addr[20], end_addr[20];
+	int i;
+
+	if (!l2cap_frame_get_be16(frame, &length))
+		return false;
+
+	print_field("%*cLength: 0x%04x", indent, ' ', length);
+
+	for (i = 0; i < length / 12; i++) {
+
+		if (!get_macaddr(bnep_frame, start_addr))
+			return false;
+
+		if (!get_macaddr(bnep_frame, end_addr))
+			return false;
+
+		print_field("%*c%s - %s", indent, ' ', start_addr, end_addr);
+	}
+
+	return true;
+}
+
 struct bnep_control_data {
 	uint8_t type;
 	const char *str;
+	bool (*func) (struct bnep_frame *frame, uint8_t indent);
 };
 
 static const struct bnep_control_data bnep_control_table[] = {
-	{ 0x00, "Command Not Understood",	},
-	{ 0x01, "Setup Conn Req",		},
-	{ 0x02, "Setup Conn Rsp",		},
-	{ 0x03, "Filter NetType Set",		},
-	{ 0x04, "Filter NetType Rsp",		},
-	{ 0x05, "Filter MultAddr Set",		},
-	{ 0x06, "Filter MultAddr Rsp",		},
+	{ 0x00, "Command Not Understood",	cmd_nt_understood	},
+	{ 0x01, "Setup Conn Req",		setup_conn_req		},
+	{ 0x02, "Setup Conn Rsp",		print_rsp_msg		},
+	{ 0x03, "Filter NetType Set",		filter_nettype_req	},
+	{ 0x04, "Filter NetType Rsp",		print_rsp_msg		},
+	{ 0x05, "Filter MultAddr Set",		filter_multaddr_req	},
+	{ 0x06, "Filter MultAddr Rsp",		print_rsp_msg		},
 	{ }
 };
 
@@ -137,8 +290,16 @@ static bool bnep_control(struct bnep_frame *bnep_frame,
 
 	print_field("%*c%s (0x%02x) ", indent, ' ', type_str, ctype);
 
-	/* TODO: Handle BNEP control types */
+	if (!bnep_control_data || !bnep_control_data->func) {
+		packet_hexdump(frame->data, hdr_len - 1);
+		l2cap_frame_pull(frame, frame, hdr_len - 1);
+		goto done;
+	}
 
+	if (!bnep_control_data->func(bnep_frame, indent+2))
+		return false;
+
+done:
 	return true;
 }
 
@@ -194,6 +355,43 @@ static bool bnep_dst_only(struct bnep_frame *bnep_frame,
 
 	print_field("%*cdst %s [proto 0x%04x] ", indent,
 					' ', dest_addr, proto);
+
+	return true;
+}
+
+static bool bnep_eval_extension(struct bnep_frame *bnep_frame, uint8_t indent)
+{
+	struct l2cap_frame *frame = &bnep_frame->l2cap_frame;
+	uint8_t type, length;
+	int extension;
+
+	if (!l2cap_frame_get_u8(frame, &type))
+		return false;
+
+	if (!l2cap_frame_get_u8(frame, &length))
+		return false;
+
+	extension = GET_EXTENSION(type);
+	type = GET_PKT_TYPE(type);
+
+	switch (type) {
+	case BNEP_EXTENSION_CONTROL:
+		print_field("%*cExt Control(0x%02x|%s) len 0x%02x", indent,
+				' ', type, extension ? "1" : "0", length);
+		if (!bnep_control(bnep_frame, indent+2, length))
+			return false;
+		break;
+
+	default:
+		print_field("%*cExt Unknown(0x%02x|%s) len 0x%02x", indent,
+				' ', type, extension ? "1" : "0", length);
+		packet_hexdump(frame->data, length);
+		l2cap_frame_pull(frame, frame, length);
+	}
+
+	if (extension)
+		if (!bnep_eval_extension(bnep_frame, indent))
+			return false;
 
 	return true;
 }
@@ -264,7 +462,16 @@ void bnep_packet(const struct l2cap_frame *frame)
 	if (!bnep_data->func(&bnep_frame, indent, -1))
 		goto fail;
 
-	/* TODO: Handle BNEP packet with Extension Header */
+	/* Extension info */
+	if (bnep_frame.extension)
+		if (!bnep_eval_extension(&bnep_frame, indent+2))
+			goto fail;
+
+	/* Control packet => No payload info */
+	if (bnep_frame.type == BNEP_CONTROL)
+		return;
+
+	/* TODO: Handle BNEP IP packet */
 	packet_hexdump(l2cap_frame->data, l2cap_frame->size);
 
 	return;

@@ -614,7 +614,8 @@ static void print_config_options(const struct l2cap_frame *frame,
 
 	while (consumed < size - 2) {
 		const char *str = "Unknown";
-		uint8_t type = data[consumed];
+		uint8_t type = data[consumed] & 0x7f;
+		uint8_t hint = data[consumed] & 0x80;
 		uint8_t len = data[consumed + 1];
 		uint8_t expect_len = 0;
 		int i;
@@ -627,7 +628,8 @@ static void print_config_options(const struct l2cap_frame *frame,
 			}
 		}
 
-		print_field("Option: %s (0x%2.2x)", str, type);
+		print_field("Option: %s (0x%2.2x) [%s]", str, type,
+						hint ? "hint" : "mandatory");
 
 		if (expect_len == 0) {
 			consumed += 2;
@@ -2046,6 +2048,15 @@ static void att_error_response(const struct l2cap_frame *frame)
 	case 0x11:
 		str = "Insufficient Resources";
 		break;
+	case 0xfd:
+		str = "CCC Improperly Configured";
+		break;
+	case 0xfe:
+		str = "Procedure Already in Progress";
+		break;
+	case 0xff:
+		str = "Out of Range";
+		break;
 	default:
 		str = "Reserved";
 		break;
@@ -2208,12 +2219,35 @@ static void att_read_group_type_req(const struct l2cap_frame *frame)
 	print_uuid("Attribute group type", frame->data + 4, frame->size - 4);
 }
 
+static void print_group_list(const char *label, uint8_t length,
+					const void *data, uint16_t size)
+{
+	uint8_t count;
+
+	if (length == 0)
+		return;
+
+	count = size / length;
+
+	print_field("%s: %u entr%s", label, count, count == 1 ? "y" : "ies");
+
+	while (size >= length) {
+		print_handle_range("Handle range", data);
+		print_uuid("UUID", data + 4, length - 4);
+
+		data += length;
+		size -= length;
+	}
+
+	packet_hexdump(data, size);
+}
+
 static void att_read_group_type_rsp(const struct l2cap_frame *frame)
 {
 	const struct bt_l2cap_att_read_group_type_rsp *pdu = frame->data;
 
 	print_field("Attribute data length: %d", pdu->length);
-	print_data_list("Attribute data list", pdu->length,
+	print_group_list("Attribute group list", pdu->length,
 					frame->data + 1, frame->size - 1);
 }
 
@@ -2287,6 +2321,13 @@ static void att_write_command(const struct l2cap_frame *frame)
 	print_hex_field("  Data", frame->data + 2, frame->size - 2);
 }
 
+static void att_signed_write_command(const struct l2cap_frame *frame)
+{
+	print_field("Handle: 0x%4.4x", get_le16(frame->data));
+	print_hex_field("  Data", frame->data + 2, frame->size - 2 - 12);
+	print_hex_field("  Signature", frame->data + frame->size - 12, 12);
+}
+
 struct att_opcode_data {
 	uint8_t opcode;
 	const char *str;
@@ -2348,7 +2389,7 @@ static const struct att_opcode_data att_opcode_table[] = {
 			att_handle_value_conf, 0, true },
 	{ 0x52, "Write Command",
 			att_write_command, 2, false },
-	{ 0xd2, "Signed Write Command"		},
+	{ 0xd2, "Signed Write Command", att_signed_write_command, 14, false },
 	{ }
 };
 

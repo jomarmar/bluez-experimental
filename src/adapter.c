@@ -2220,7 +2220,7 @@ static bool parse_discovery_filter_dict(struct discovery_filter **filter,
 	dbus_message_iter_init(msg, &iter);
 	if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_ARRAY ||
 	    dbus_message_iter_get_element_type(&iter) != DBUS_TYPE_DICT_ENTRY)
-		return false;
+		goto invalid_args;
 
 	dbus_message_iter_recurse(&iter, &subiter);
 	do {
@@ -5825,6 +5825,11 @@ static int adapter_authorize(struct btd_adapter *adapter, const bdaddr_t *dst,
 	if (!device)
 		return 0;
 
+	if (device_is_disconnecting(device)) {
+		DBG("Authorization request while disconnecting");
+		return 0;
+	}
+
 	/* Device connected? */
 	if (!g_slist_find(adapter->connections, device))
 		error("Authorization request for non-connected device!?");
@@ -6696,8 +6701,9 @@ static void new_link_key_callback(uint16_t index, uint16_t length,
 
 	ba2str(&addr->bdaddr, dst);
 
-	DBG("hci%u new key for %s type %u pin_len %u", adapter->dev_id,
-					dst, ev->key.type, ev->key.pin_len);
+	DBG("hci%u new key for %s type %u pin_len %u store_hint %u",
+		adapter->dev_id, dst, ev->key.type, ev->key.pin_len,
+		ev->store_hint);
 
 	if (ev->key.pin_len > 16) {
 		error("Invalid PIN length (%u) in new_key event",

@@ -74,6 +74,7 @@ tools/bluetooth-player
 tools/l2cap-tester
 tools/sco-tester
 tools/hci-tester
+tools/eddystone
 tools/ibeacon
 tools/btproxy
 tools/btinfo
@@ -109,9 +110,11 @@ tools/smp-tester
 tools/gap-tester
 tools/rfcomm-tester
 tools/bnep-tester
+tools/userchan-tester
 tools/btattach
 tools/btmgmt
 tools/btsnoop
+peripheral/btsensor
 monitor/btmon
 emulator/btvirt
 emulator/b1ee

@@ -1226,6 +1226,11 @@ struct avdtp_remote_sep *avdtp_find_remote_sep(struct avdtp *session,
 		if (codec_data->media_codec_type != lsep->codec)
 			continue;
 
+		if (lsep->ind && lsep->ind->match_codec)
+			if (!lsep->ind->match_codec(session, codec_data,
+							lsep->user_data))
+				continue;
+
 		if (sep->stream == NULL)
 			return sep;
 	}
@@ -1705,8 +1710,7 @@ static gboolean avdtp_start_cmd(struct avdtp *session, uint8_t transaction,
 	for (i = 0; i < seid_count; i++, seid++) {
 		failed_seid = seid->seid;
 
-		sep = find_local_sep_by_seid(session,
-					req->first_seid.seid);
+		sep = find_local_sep_by_seid(session, seid->seid);
 		if (!sep || !sep->stream) {
 			err = AVDTP_BAD_ACP_SEID;
 			goto failed;
@@ -1817,8 +1821,7 @@ static gboolean avdtp_suspend_cmd(struct avdtp *session, uint8_t transaction,
 	for (i = 0; i < seid_count; i++, seid++) {
 		failed_seid = seid->seid;
 
-		sep = find_local_sep_by_seid(session,
-					req->first_seid.seid);
+		sep = find_local_sep_by_seid(session, seid->seid);
 		if (!sep || !sep->stream) {
 			err = AVDTP_BAD_ACP_SEID;
 			goto failed;
@@ -3469,6 +3472,13 @@ int avdtp_abort(struct avdtp *session, struct avdtp_stream *stream)
 {
 	struct seid_req req;
 	int ret;
+
+	if (!stream && session->discover) {
+		/* Don't call cb since it being aborted */
+		session->discover->cb = NULL;
+		finalize_discovery(session, -ECANCELED);
+		return -EALREADY;
+	}
 
 	if (!g_slist_find(session->streams, stream))
 		return -EINVAL;

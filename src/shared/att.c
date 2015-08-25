@@ -82,6 +82,7 @@ struct bt_att {
 	void *debug_data;
 
 	struct bt_crypto *crypto;
+	bool ext_signed;
 
 	struct sign_info *local_sign;
 	struct sign_info *remote_sign;
@@ -575,6 +576,54 @@ static bool disconnect_cb(struct io *io, void *user_data)
 	return false;
 }
 
+static bool change_security(struct bt_att *att, uint8_t ecode)
+{
+	int security;
+
+	security = bt_att_get_security(att);
+	if (security != BT_ATT_SECURITY_AUTO)
+		return false;
+
+	if (ecode == BT_ATT_ERROR_INSUFFICIENT_ENCRYPTION &&
+					security < BT_ATT_SECURITY_MEDIUM)
+		security = BT_ATT_SECURITY_MEDIUM;
+	else if (ecode == BT_ATT_ERROR_AUTHENTICATION &&
+					security < BT_ATT_SECURITY_HIGH)
+		security = BT_ATT_SECURITY_HIGH;
+	else
+		return false;
+
+	return bt_att_set_security(att, security);
+}
+
+static bool handle_error_rsp(struct bt_att *att, uint8_t *pdu,
+					ssize_t pdu_len, uint8_t *opcode)
+{
+	const struct bt_att_pdu_error_rsp *rsp;
+	struct att_send_op *op = att->pending_req;
+
+	if (pdu_len != sizeof(*rsp)) {
+		*opcode = 0;
+		return false;
+	}
+
+	rsp = (void *) pdu;
+
+	*opcode = rsp->opcode;
+
+	/* Attempt to change security */
+	if (!change_security(att, rsp->ecode))
+		return false;
+
+	util_debug(att->debug_callback, att->debug_data,
+						"Retrying operation %p", op);
+
+	att->pending_req = NULL;
+
+	/* Push operation back to request queue */
+	return queue_push_head(att->req_queue, op);
+}
+
 static void handle_rsp(struct bt_att *att, uint8_t opcode, uint8_t *pdu,
 								ssize_t pdu_len)
 {
@@ -600,10 +649,11 @@ static void handle_rsp(struct bt_att *att, uint8_t opcode, uint8_t *pdu,
 	 * the request is malformed, end the current request with failure.
 	 */
 	if (opcode == BT_ATT_OP_ERROR_RSP) {
-		if (pdu_len != 4)
-			goto fail;
-
-		req_opcode = pdu[0];
+		/* Return if error response cause a retry */
+		if (handle_error_rsp(att, pdu, pdu_len, &req_opcode)) {
+			wakeup_writer(att);
+			return;
+		}
 	} else if (!(req_opcode = get_req_opcode(opcode)))
 		goto fail;
 
@@ -732,7 +782,7 @@ static void handle_notify(struct bt_att *att, uint8_t opcode, uint8_t *pdu,
 	const struct queue_entry *entry;
 	bool found;
 
-	if (opcode & ATT_OP_SIGNED_MASK) {
+	if ((opcode & ATT_OP_SIGNED_MASK) && !att->ext_signed) {
 		if (!handle_signed(att, opcode, pdu, pdu_len))
 			return;
 		pdu_len -= BT_ATT_SIGNATURE_LEN;
@@ -900,7 +950,7 @@ static void bt_att_free(struct bt_att *att)
 	free(att);
 }
 
-struct bt_att *bt_att_new(int fd)
+struct bt_att *bt_att_new(int fd, bool ext_signed)
 {
 	struct bt_att *att;
 
@@ -912,7 +962,7 @@ struct bt_att *bt_att_new(int fd)
 		return NULL;
 
 	att->fd = fd;
-
+	att->ext_signed = ext_signed;
 	att->mtu = BT_ATT_DEFAULT_LE_MTU;
 	att->buf = malloc(att->mtu);
 	if (!att->buf)
@@ -923,7 +973,8 @@ struct bt_att *bt_att_new(int fd)
 		goto fail;
 
 	/* crypto is optional, if not available leave it NULL */
-	att->crypto = bt_crypto_new();
+	if (!ext_signed)
+		att->crypto = bt_crypto_new();
 
 	att->req_queue = queue_new();
 	if (!att->req_queue)
@@ -1341,7 +1392,7 @@ bool bt_att_unregister_all(struct bt_att *att)
 	return true;
 }
 
-int bt_att_get_sec_level(struct bt_att *att)
+int bt_att_get_security(struct bt_att *att)
 {
 	struct bt_security sec;
 	socklen_t len;
@@ -1360,11 +1411,12 @@ int bt_att_get_sec_level(struct bt_att *att)
 	return sec.level;
 }
 
-bool bt_att_set_sec_level(struct bt_att *att, int level)
+bool bt_att_set_security(struct bt_att *att, int level)
 {
 	struct bt_security sec;
 
-	if (!att || level < BT_SECURITY_LOW || level > BT_SECURITY_HIGH)
+	if (!att || level < BT_ATT_SECURITY_AUTO ||
+						level > BT_ATT_SECURITY_HIGH)
 		return false;
 
 	if (!att->io_on_l2cap) {

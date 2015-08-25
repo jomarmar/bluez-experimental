@@ -707,7 +707,7 @@ static gboolean characteristic_value_exists(const GDBusPropertyTable *property,
 
 	gatt_db_attribute_read(chrc->attr, 0, 0, NULL, read_check_cb, &ret);
 
-	return TRUE;
+	return ret;
 }
 
 static gboolean characteristic_get_notifying(const GDBusPropertyTable *property,
@@ -1535,6 +1535,9 @@ static struct service *service_create(struct gatt_db_attribute *attr,
 
 	DBG("Exported GATT service: %s", service->path);
 
+	/* Set service active so we can skip discovering next time */
+	gatt_db_service_set_active(attr, true);
+
 	return service;
 }
 
@@ -1941,23 +1944,41 @@ void btd_gatt_client_disconnected(struct btd_gatt_client *client)
 	DBG("Device disconnected. Cleaning up.");
 
 	/*
-	 * Remove all services. We'll recreate them when a new bt_gatt_client
-	 * becomes ready. Leave the services around if the device is bonded.
 	 * TODO: Once GATT over BR/EDR is properly supported, we should pass the
 	 * correct bdaddr_type based on the transport over which GATT is being
 	 * done.
 	 */
-	if (!device_is_bonded(client->device, BDADDR_LE_PUBLIC)) {
-		DBG("Device not bonded. Removing exported services.");
-		queue_remove_all(client->services, NULL, NULL,
-							unregister_service);
-	} else {
-		DBG("Device is bonded. Keeping exported services up.");
-		queue_foreach(client->all_notify_clients, clear_notify_id,
-									NULL);
-		queue_foreach(client->services, cancel_ops, client->gatt);
-	}
+	queue_foreach(client->all_notify_clients, clear_notify_id, NULL);
+	queue_foreach(client->services, cancel_ops, client->gatt);
 
 	bt_gatt_client_unref(client->gatt);
 	client->gatt = NULL;
+}
+
+struct foreach_service_data {
+	btd_gatt_client_service_path_t func;
+	void *user_data;
+};
+
+static void client_service_foreach(void *data, void *user_data)
+{
+	struct service *service = data;
+	struct foreach_service_data *foreach_data = user_data;
+
+	foreach_data->func(service->path, foreach_data->user_data);
+}
+
+void btd_gatt_client_foreach_service(struct btd_gatt_client *client,
+					btd_gatt_client_service_path_t func,
+					void *user_data)
+{
+	struct foreach_service_data data;
+
+	if (!client)
+		return;
+
+	data.func = func;
+	data.user_data = user_data;
+
+	queue_foreach(client->services, client_service_foreach, &data);
 }

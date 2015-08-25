@@ -119,6 +119,7 @@ struct external_desc {
 	struct external_service *service;
 	char *chrc_path;
 	GDBusProxy *proxy;
+	uint32_t perm;
 	struct gatt_db_attribute *attrib;
 	bool handled;
 	struct queue *pending_reads;
@@ -1202,26 +1203,18 @@ static bool check_service_path(GDBusProxy *proxy,
 	return g_strcmp0(service_path, service->path) == 0;
 }
 
-static bool parse_flags(GDBusProxy *proxy, uint8_t *props, uint8_t *ext_props)
+static bool parse_chrc_flags(DBusMessageIter *array, uint8_t *props,
+							uint8_t *ext_props)
 {
-	DBusMessageIter iter, array;
 	const char *flag;
 
 	*props = *ext_props = 0;
 
-	if (!g_dbus_proxy_get_property(proxy, "Flags", &iter))
-		return false;
-
-	if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_ARRAY)
-		return false;
-
-	dbus_message_iter_recurse(&iter, &array);
-
 	do {
-		if (dbus_message_iter_get_arg_type(&array) != DBUS_TYPE_STRING)
+		if (dbus_message_iter_get_arg_type(array) != DBUS_TYPE_STRING)
 			return false;
 
-		dbus_message_iter_get_basic(&array, &flag);
+		dbus_message_iter_get_basic(array, &flag);
 
 		if (!strcmp("broadcast", flag))
 			*props |= BT_GATT_CHRC_PROP_BROADCAST;
@@ -1241,16 +1234,80 @@ static bool parse_flags(GDBusProxy *proxy, uint8_t *props, uint8_t *ext_props)
 			*ext_props |= BT_GATT_CHRC_EXT_PROP_RELIABLE_WRITE;
 		else if (!strcmp("writable-auxiliaries", flag))
 			*ext_props |= BT_GATT_CHRC_EXT_PROP_WRITABLE_AUX;
-		else {
+		else if (!strcmp("encrypt-read", flag)) {
+			*props |= BT_GATT_CHRC_PROP_READ;
+			*ext_props |= BT_GATT_CHRC_EXT_PROP_ENC_READ;
+		} else if (!strcmp("encrypt-write", flag)) {
+			*props |= BT_GATT_CHRC_PROP_WRITE;
+			*ext_props |= BT_GATT_CHRC_EXT_PROP_ENC_WRITE;
+		} else if (!strcmp("encrypt-authenticated-read", flag)) {
+			*props |= BT_GATT_CHRC_PROP_READ;
+			*ext_props |= BT_GATT_CHRC_EXT_PROP_AUTH_READ;
+		} else if (!strcmp("encrypt-authenticated-write", flag)) {
+			*props |= BT_GATT_CHRC_PROP_WRITE;
+			*ext_props |= BT_GATT_CHRC_EXT_PROP_AUTH_WRITE;
+		} else {
 			error("Invalid characteristic flag: %s", flag);
 			return false;
 		}
-	} while (dbus_message_iter_next(&array));
+	} while (dbus_message_iter_next(array));
 
 	if (*ext_props)
 		*props |= BT_GATT_CHRC_PROP_EXT_PROP;
 
 	return true;
+}
+
+static bool parse_desc_flags(DBusMessageIter *array, uint32_t *perm)
+{
+	const char *flag;
+
+	*perm = 0;
+
+	do {
+		if (dbus_message_iter_get_arg_type(array) != DBUS_TYPE_STRING)
+			return false;
+
+		dbus_message_iter_get_basic(array, &flag);
+
+		if (!strcmp("read", flag))
+			*perm |= BT_ATT_PERM_READ;
+		else if (!strcmp("write", flag))
+			*perm |= BT_ATT_PERM_WRITE;
+		else if (!strcmp("encrypt-read", flag))
+			*perm |= BT_ATT_PERM_READ | BT_ATT_PERM_READ_ENCRYPT;
+		else if (!strcmp("encrypt-write", flag))
+			*perm |= BT_ATT_PERM_WRITE | BT_ATT_PERM_WRITE_ENCRYPT;
+		else if (!strcmp("encrypt-authenticated-read", flag))
+			*perm |= BT_ATT_PERM_READ | BT_ATT_PERM_READ_AUTHEN;
+		else if (!strcmp("encrypt-authenticated-write", flag))
+			*perm |= BT_ATT_PERM_WRITE | BT_ATT_PERM_WRITE_AUTHEN;
+		else {
+			error("Invalid descriptor flag: %s", flag);
+			return false;
+		}
+	} while (dbus_message_iter_next(array));
+
+	return true;
+}
+
+static bool parse_flags(GDBusProxy *proxy, uint8_t *props, uint8_t *ext_props,
+								uint32_t *perm)
+{
+	DBusMessageIter iter, array;
+
+	if (!g_dbus_proxy_get_property(proxy, "Flags", &iter))
+		return false;
+
+	if (dbus_message_iter_get_arg_type(&iter) != DBUS_TYPE_ARRAY)
+		return false;
+
+	dbus_message_iter_recurse(&iter, &array);
+
+	if (perm)
+		return parse_desc_flags(&array, perm);
+
+	return parse_chrc_flags(&array, props, ext_props);
 }
 
 static void proxy_added_cb(GDBusProxy *proxy, void *user_data)
@@ -1319,7 +1376,7 @@ static void proxy_added_cb(GDBusProxy *proxy, void *user_data)
 		 * are used to determine if any special descriptors should be
 		 * created.
 		 */
-		if (!parse_flags(proxy, &chrc->props, &chrc->ext_props)) {
+		if (!parse_flags(proxy, &chrc->props, &chrc->ext_props, NULL)) {
 			error("Failed to parse characteristic properties");
 			service->failed = true;
 			return;
@@ -1360,6 +1417,16 @@ static void proxy_added_cb(GDBusProxy *proxy, void *user_data)
 		/* Add 1 for the descriptor attribute */
 		if (!incr_attr_count(service, 1)) {
 			error("Failed to increment attribute count");
+			service->failed = true;
+			return;
+		}
+
+		/*
+		 * Parse descriptors flags here since they are used to
+		 * determine the permission the descriptor should have
+		 */
+		if (!parse_flags(proxy, NULL, NULL, &desc->perm)) {
+			error("Failed to parse characteristic properties");
 			service->failed = true;
 			return;
 		}
@@ -1668,11 +1735,27 @@ static uint32_t permissions_from_props(uint8_t props, uint8_t ext_props)
 
 	if (props & BT_GATT_CHRC_PROP_WRITE ||
 			props & BT_GATT_CHRC_PROP_WRITE_WITHOUT_RESP ||
-			ext_props & BT_GATT_CHRC_EXT_PROP_RELIABLE_WRITE)
+			ext_props & BT_GATT_CHRC_EXT_PROP_RELIABLE_WRITE ||
+			ext_props & BT_GATT_CHRC_EXT_PROP_ENC_WRITE ||
+			ext_props & BT_GATT_CHRC_EXT_PROP_AUTH_WRITE)
 		perm |= BT_ATT_PERM_WRITE;
 
-	if (props & BT_GATT_CHRC_PROP_READ)
+	if (props & BT_GATT_CHRC_PROP_READ ||
+			ext_props & BT_GATT_CHRC_EXT_PROP_ENC_READ ||
+			ext_props & BT_GATT_CHRC_EXT_PROP_AUTH_READ)
 		perm |= BT_ATT_PERM_READ;
+
+	if (ext_props & BT_GATT_CHRC_EXT_PROP_ENC_READ)
+		perm |= BT_ATT_PERM_READ_ENCRYPT;
+
+	if (ext_props & BT_GATT_CHRC_EXT_PROP_ENC_WRITE)
+		perm |= BT_ATT_PERM_WRITE_ENCRYPT;
+
+	if (ext_props & BT_GATT_CHRC_EXT_PROP_AUTH_READ)
+		perm |= BT_ATT_PERM_READ_AUTHEN;
+
+	if (ext_props & BT_GATT_CHRC_EXT_PROP_AUTH_WRITE)
+		perm |= BT_ATT_PERM_WRITE_AUTHEN;
 
 	return perm;
 }
@@ -1700,22 +1783,16 @@ static uint8_t ccc_write_cb(uint16_t value, void *user_data)
 		return 0;
 	}
 
-	/*
-	 * TODO: All of the errors below should fall into the so called
-	 * "Application Error" range. Since there is no well defined error for
-	 * these, we return a generic ATT protocol error for now.
-	 */
-
 	if (chrc->ntfy_cnt == UINT_MAX) {
 		/* Maximum number of per-device CCC descriptors configured */
-		return BT_ATT_ERROR_REQUEST_NOT_SUPPORTED;
+		return BT_ATT_ERROR_INSUFFICIENT_RESOURCES;
 	}
 
 	/* Don't support undefined CCC values yet */
 	if (value > 2 ||
 		(value == 1 && !(chrc->props & BT_GATT_CHRC_PROP_NOTIFY)) ||
 		(value == 2 && !(chrc->props & BT_GATT_CHRC_PROP_INDICATE)))
-		return BT_ATT_ERROR_REQUEST_NOT_SUPPORTED;
+		return BT_ERROR_CCC_IMPROPERLY_CONFIGURED;
 
 	/*
 	 * Always call StartNotify for an incoming enable and ignore the return
@@ -1724,7 +1801,7 @@ static uint8_t ccc_write_cb(uint16_t value, void *user_data)
 	if (g_dbus_proxy_method_call(chrc->proxy,
 						"StartNotify", NULL, NULL,
 						NULL, NULL) == FALSE)
-		return BT_ATT_ERROR_REQUEST_NOT_SUPPORTED;
+		return BT_ATT_ERROR_UNLIKELY;
 
 	__sync_fetch_and_add(&chrc->ntfy_cnt, 1);
 
@@ -1874,13 +1951,10 @@ static bool database_add_desc(struct external_service *service,
 		return false;
 	}
 
-	/*
-	 * TODO: Set permissions based on a D-Bus property of the external
-	 * descriptor.
-	 */
 	desc->attrib = gatt_db_service_add_descriptor(service->attrib, &uuid,
-					BT_ATT_PERM_READ | BT_ATT_PERM_WRITE,
-					desc_read_cb, desc_write_cb, desc);
+							desc->perm,
+							desc_read_cb,
+							desc_write_cb, desc);
 	if (!desc->attrib) {
 		error("Failed to create descriptor entry in database");
 		return false;
@@ -2215,12 +2289,17 @@ static int profile_add(struct external_profile *profile, const char *uuid)
 	/* Assign directly to avoid having extra fields */
 	p->name = (const void *) g_strdup_printf("%s%s/%s", profile->owner,
 							profile->path, uuid);
-	if (!p->name)
+	if (!p->name) {
+		free(p);
 		return -ENOMEM;
+	}
 
 	p->remote_uuid = (const void *) g_strdup(uuid);
-	if (!p->remote_uuid)
+	if (!p->remote_uuid) {
+		g_free((void *) p->name);
+		free(p);
 		return -ENOMEM;
+	}
 
 	p->auto_connect = true;
 

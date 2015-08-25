@@ -33,6 +33,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/uio.h>
+#include <time.h>
 
 #include "lib/bluetooth.h"
 #include "lib/hci.h"
@@ -68,6 +69,9 @@ struct bt_le {
 	struct bt_phy *phy;
 	struct bt_crypto *crypto;
 	int adv_timeout_id;
+	int scan_timeout_id;
+	bool scan_window_active;
+	uint8_t scan_chan_idx;
 
 	uint8_t  event_mask[16];
 	uint16_t manufacturer;
@@ -421,11 +425,12 @@ static void send_event(struct bt_le *hci, uint8_t event,
 		fprintf(stderr, "Write to /dev/vhci failed (%m)\n");
 }
 
-static void send_adv_pkt(struct bt_le *hci)
+static void send_adv_pkt(struct bt_le *hci, uint8_t channel)
 {
 	struct bt_phy_pkt_adv pkt;
 
 	memset(&pkt, 0, sizeof(pkt));
+	pkt.chan_idx = channel;
 	pkt.pdu_type = hci->le_adv_type;
 	pkt.tx_addr_type = hci->le_adv_own_addr_type;
 	switch (hci->le_adv_own_addr_type) {
@@ -448,17 +453,33 @@ static void send_adv_pkt(struct bt_le *hci)
 				hci->le_scan_rsp_data, pkt.scan_rsp_len);
 }
 
+static unsigned int get_adv_delay(void)
+{
+	/* The advertising delay is a pseudo-random value with a range
+	 * of 0 ms to 10 ms generated for each advertising event.
+	 */
+	srand(time(NULL));
+	return (rand() % 11);
+}
+
 static void adv_timeout_callback(int id, void *user_data)
 {
 	struct bt_le *hci = user_data;
-	unsigned int min_msec, max_msec;
+	unsigned int msec, min_msec, max_msec;
 
-	send_adv_pkt(hci);
+	if (hci->le_adv_channel_map & 0x01)
+		send_adv_pkt(hci, 37);
+	if (hci->le_adv_channel_map & 0x02)
+		send_adv_pkt(hci, 38);
+	if (hci->le_adv_channel_map & 0x04)
+		send_adv_pkt(hci, 39);
 
 	min_msec = (hci->le_adv_min_interval * 625) / 1000;
 	max_msec = (hci->le_adv_max_interval * 625) / 1000;
 
-	if (mainloop_modify_timeout(id, (min_msec + max_msec) / 2) < 0) {
+	msec = ((min_msec + max_msec) / 2) + get_adv_delay();
+
+	if (mainloop_modify_timeout(id, msec) < 0) {
 		fprintf(stderr, "Setting advertising timeout failed\n");
 		hci->le_adv_enable = 0x00;
 	}
@@ -471,7 +492,7 @@ static bool start_adv(struct bt_le *hci)
 	if (hci->adv_timeout_id >= 0)
 		return false;
 
-	msec = (hci->le_adv_min_interval * 625) / 1000;
+	msec = ((hci->le_adv_min_interval * 625) / 1000) + get_adv_delay();
 
 	hci->adv_timeout_id = mainloop_add_timeout(msec, adv_timeout_callback,
 								hci, NULL);
@@ -488,6 +509,65 @@ static bool stop_adv(struct bt_le *hci)
 
 	mainloop_remove_timeout(hci->adv_timeout_id);
 	hci->adv_timeout_id = -1;
+
+	return true;
+}
+
+static void scan_timeout_callback(int id, void *user_data)
+{
+	struct bt_le *hci = user_data;
+	unsigned int msec;
+
+	if (hci->le_scan_window == hci->le_scan_interval ||
+						!hci->scan_window_active) {
+		msec = (hci->le_scan_window * 625) / 1000;
+		hci->scan_window_active = true;
+
+		hci->scan_chan_idx++;
+		if (hci->scan_chan_idx > 39)
+			hci->scan_chan_idx = 37;
+	} else {
+		msec = ((hci->le_scan_interval -
+					hci->le_scan_window) * 625) / 1000;
+		hci->scan_window_active = false;
+	}
+
+	if (mainloop_modify_timeout(id, msec) < 0) {
+		fprintf(stderr, "Setting scanning timeout failed\n");
+		hci->le_scan_enable = 0x00;
+		hci->scan_window_active = false;
+	}
+}
+
+static bool start_scan(struct bt_le *hci)
+{
+	unsigned int msec;
+
+	if (hci->scan_timeout_id >= 0)
+		return false;
+
+	msec = (hci->le_scan_window * 625) / 1000;
+
+	hci->scan_timeout_id = mainloop_add_timeout(msec, scan_timeout_callback,
+								hci, NULL);
+	if (hci->scan_timeout_id < 0)
+		return false;
+
+	hci->scan_window_active = true;
+	hci->scan_chan_idx = 37;
+
+	return true;
+}
+
+static bool stop_scan(struct bt_le *hci)
+{
+	if (hci->scan_timeout_id < 0)
+		return false;
+
+	mainloop_remove_timeout(hci->scan_timeout_id);
+	hci->scan_timeout_id = -1;
+
+	hci->scan_window_active = false;
 
 	return true;
 }
@@ -565,6 +645,7 @@ static void cmd_reset(struct bt_le *hci, const void *data, uint8_t size)
 	uint8_t status;
 
 	stop_adv(hci);
+	stop_scan(hci);
 	reset_defaults(hci);
 
 	status = BT_HCI_ERR_SUCCESS;
@@ -970,6 +1051,7 @@ static void cmd_le_set_scan_enable(struct bt_le *hci,
 {
 	const struct bt_hci_cmd_le_set_scan_enable *cmd = data;
 	uint8_t status;
+	bool result;
 
 	/* Valid range for scan enable is 0x00 to 0x01 */
 	if (cmd->enable > 0x01) {
@@ -992,6 +1074,17 @@ static void cmd_le_set_scan_enable(struct bt_le *hci,
 	}
 
 	clear_scan_cache(hci);
+
+	if (cmd->enable == 0x01)
+		result = start_scan(hci);
+	else
+		result = stop_scan(hci);
+
+	if (!result) {
+		cmd_status(hci, BT_HCI_ERR_UNSPECIFIED_ERROR,
+					BT_HCI_CMD_LE_SET_SCAN_ENABLE);
+		return;
+	}
 
 	hci->le_scan_enable = cmd->enable;
 	hci->le_scan_filter_dup = cmd->filter_dup;
@@ -1709,11 +1802,14 @@ static void phy_recv_callback(uint16_t type, const void *data,
 		if (!(hci->le_event_mask[0] & 0x02))
 			return;
 
-		if (hci->le_scan_enable == 0x01) {
+		if (hci->scan_window_active) {
 			const struct bt_phy_pkt_adv *pkt = data;
 			uint8_t buf[100];
 			struct bt_hci_evt_le_adv_report *evt = (void *) buf;
 			uint8_t tx_addr_type, tx_addr[6];
+
+			if (hci->scan_chan_idx != pkt->chan_idx)
+				break;
 
 			resolve_peer_addr(hci, pkt->tx_addr_type, pkt->tx_addr,
 							&tx_addr_type, tx_addr);
@@ -1773,6 +1869,8 @@ struct bt_le *bt_le_new(void)
 		return NULL;
 
 	hci->adv_timeout_id = -1;
+	hci->scan_timeout_id = -1;
+	hci->scan_window_active = false;
 
 	reset_defaults(hci);
 

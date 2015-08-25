@@ -27,6 +27,11 @@
 #define __packed __attribute__((packed))
 #endif
 
+#define BT_ATT_SECURITY_AUTO	0
+#define BT_ATT_SECURITY_LOW	1
+#define BT_ATT_SECURITY_MEDIUM	2
+#define BT_ATT_SECURITY_HIGH	3
+
 #define BT_ATT_DEFAULT_LE_MTU	23
 #define BT_ATT_MAX_LE_MTU	517
 #define BT_ATT_MAX_VALUE_LEN	512
@@ -106,12 +111,18 @@ struct bt_att_pdu_error_rsp {
  * "Access", "Encryption", "Authentication", and "Authorization". A bitmask of
  * permissions is a byte that encodes a combination of these.
  */
-#define BT_ATT_PERM_READ	0x01
-#define BT_ATT_PERM_WRITE	0x02
-#define BT_ATT_PERM_ENCRYPT	0x04
-#define BT_ATT_PERM_AUTHEN	0x08
-#define BT_ATT_PERM_AUTHOR	0x10
-#define BT_ATT_PERM_NONE	0x20
+#define BT_ATT_PERM_READ		0x01
+#define BT_ATT_PERM_WRITE		0x02
+#define BT_ATT_PERM_READ_ENCRYPT	0x04
+#define BT_ATT_PERM_WRITE_ENCRYPT	0x08
+#define BT_ATT_PERM_ENCRYPT		(BT_ATT_PERM_READ_ENCRYPT | \
+					BT_ATT_PERM_WRITE_ENCRYPT)
+#define BT_ATT_PERM_READ_AUTHEN		0x10
+#define BT_ATT_PERM_WRITE_AUTHEN	0x20
+#define BT_ATT_PERM_AUTHEN		(BT_ATT_PERM_READ_AUTHEN | \
+					BT_ATT_PERM_WRITE_AUTHEN)
+#define BT_ATT_PERM_AUTHOR		0x40
+#define BT_ATT_PERM_NONE		0x80
 
 /* GATT Characteristic Properties Bitfield values */
 #define BT_GATT_CHRC_PROP_BROADCAST			0x01
@@ -124,5 +135,13 @@ struct bt_att_pdu_error_rsp {
 #define BT_GATT_CHRC_PROP_EXT_PROP			0x80
 
 /* GATT Characteristic Extended Properties Bitfield values */
-#define BT_GATT_CHRC_EXT_PROP_RELIABLE_WRITE	0x01
-#define BT_GATT_CHRC_EXT_PROP_WRITABLE_AUX	0x02
+#define BT_GATT_CHRC_EXT_PROP_RELIABLE_WRITE		0x01
+#define BT_GATT_CHRC_EXT_PROP_WRITABLE_AUX		0x02
+#define BT_GATT_CHRC_EXT_PROP_ENC_READ			0x04
+#define BT_GATT_CHRC_EXT_PROP_ENC_WRITE			0x08
+#define BT_GATT_CHRC_EXT_PROP_ENC	(BT_GATT_CHRC_EXT_PROP_ENC_READ | \
+					BT_GATT_CHRC_EXT_PROP_ENC_WRITE)
+#define BT_GATT_CHRC_EXT_PROP_AUTH_READ			0x10
+#define BT_GATT_CHRC_EXT_PROP_AUTH_WRITE		0x20
+#define BT_GATT_CHRC_EXT_PROP_AUTH	(BT_GATT_CHRC_EXT_PROP_AUTH_READ | \
+					BT_GATT_CHRC_EXT_PROP_AUTH_WRITE)

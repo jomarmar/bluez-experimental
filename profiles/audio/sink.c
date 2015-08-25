@@ -227,6 +227,8 @@ static void discovery_complete(struct avdtp *session, GSList *seps, struct avdtp
 	struct sink *sink = user_data;
 	int id, perr;
 
+	sink->connect_id = 0;
+
 	if (err) {
 		avdtp_unref(sink->session);
 		sink->session = NULL;
@@ -272,7 +274,9 @@ gboolean sink_setup_stream(struct btd_service *service, struct avdtp *session)
 	if (!sink->session)
 		return FALSE;
 
-	if (avdtp_discover(sink->session, discovery_complete, sink) < 0)
+	sink->connect_id = a2dp_discover(sink->session, discovery_complete,
+								sink);
+	if (sink->connect_id == 0)
 		return FALSE;
 
 	return TRUE;
@@ -406,7 +410,7 @@ int sink_disconnect(struct btd_service *service)
 	if (sink->connect_id > 0) {
 		a2dp_cancel(sink->connect_id);
 		sink->connect_id = 0;
-		btd_service_connecting_complete(sink->service, -ECANCELED);
+		btd_service_disconnecting_complete(sink->service, 0);
 
 		avdtp_unref(sink->session);
 		sink->session = NULL;

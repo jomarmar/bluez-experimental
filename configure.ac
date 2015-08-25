@@ -1,5 +1,5 @@
 AC_PREREQ(2.60)
-AC_INIT(bluez, 5.30)
+AC_INIT(bluez, 5.33)
 
 AM_INIT_AUTOMAKE([foreign subdir-objects color-tests silent-rules
 					tar-pax no-dist-gzip dist-xz])
@@ -34,8 +34,10 @@ AC_PROG_LIBTOOL
 
 if (test "$USE_MAINTAINER_MODE" = "yes"); then
 	AC_CHECK_PROG(enable_coverage, [lcov], [yes], [no])
+	AC_CHECK_PROG(enable_dbus_run_session, [dbus-run-session], [yes])
 fi
 AM_CONDITIONAL(COVERAGE, test "${enable_coverage}" = "yes")
+AM_CONDITIONAL(DBUS_RUN_SESSION, test "${enable_dbus_run_session}" = "yes")
 
 MISC_FLAGS
 

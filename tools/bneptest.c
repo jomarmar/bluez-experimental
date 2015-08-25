@@ -89,7 +89,7 @@ static int set_forward_delay(int sk)
 	struct ifreq ifr;
 
 	memset(&ifr, 0, sizeof(ifr));
-	strncpy(ifr.ifr_name, bridge, IFNAMSIZ);
+	strncpy(ifr.ifr_name, bridge, IFNAMSIZ - 1);
 	ifr.ifr_data = (char *) args;
 
 	if (ioctl(sk, SIOCDEVPRIVATE, &ifr) < 0) {
@@ -327,7 +327,7 @@ static gboolean setup_bnep_cb(GIOChannel *chan, GIOCondition cond,
 	sk = g_io_channel_unix_get_fd(chan);
 
 	/* Reading BNEP_SETUP_CONNECTION_REQUEST_MSG */
-	n = read(sk, packet, sizeof(packet));
+	n = recv(sk, packet, sizeof(packet), MSG_PEEK);
 	if (n < 0) {
 		error("read(): %s(%d)", strerror(errno), errno);
 		return FALSE;

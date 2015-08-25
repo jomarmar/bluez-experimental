@@ -80,7 +80,7 @@ include_HEADERS += $(lib_headers)
 lib_LTLIBRARIES += lib/libbluetooth.la
 
 lib_libbluetooth_la_SOURCES = $(lib_headers) $(lib_sources)
-lib_libbluetooth_la_LDFLAGS = $(AM_LDFLAGS) -version-info 21:3:18
+lib_libbluetooth_la_LDFLAGS = $(AM_LDFLAGS) -version-info 21:6:18
 lib_libbluetooth_la_DEPENDENCIES = $(local_headers)
 endif
 
@@ -257,6 +257,9 @@ EXTRA_DIST += doc/alert-api.txt \
 
 EXTRA_DIST += doc/obex-api.txt doc/obex-agent-api.txt
 
+EXTRA_DIST += doc/pics-opp.txt doc/pixit-opp.txt \
+		doc/pts-opp.txt
+
 EXTRA_DIST += tools/magic.btsnoop
 
 AM_CFLAGS += @DBUS_CFLAGS@ @GLIB_CFLAGS@
@@ -273,12 +276,13 @@ unit_test_eir_LDADD = src/libshared-glib.la lib/libbluetooth-internal.la \
 unit_tests += unit/test-uuid
 
 unit_test_uuid_SOURCES = unit/test-uuid.c
-unit_test_uuid_LDADD = lib/libbluetooth-internal.la @GLIB_LIBS@
+unit_test_uuid_LDADD = src/libshared-glib.la lib/libbluetooth-internal.la \
+								@GLIB_LIBS@
 
 unit_tests += unit/test-textfile
 
 unit_test_textfile_SOURCES = unit/test-textfile.c src/textfile.h src/textfile.c
-unit_test_textfile_LDADD = @GLIB_LIBS@
+unit_test_textfile_LDADD = src/libshared-glib.la @GLIB_LIBS@
 
 unit_tests += unit/test-crc
 
@@ -382,7 +386,8 @@ unit_test_gobex_apparam_LDADD = @GLIB_LIBS@
 unit_tests += unit/test-lib
 
 unit_test_lib_SOURCES = unit/test-lib.c
-unit_test_lib_LDADD = lib/libbluetooth-internal.la @GLIB_LIBS@
+unit_test_lib_LDADD = src/libshared-glib.la \
+				lib/libbluetooth-internal.la @GLIB_LIBS@
 
 unit_tests += unit/test-gatt
 
@@ -419,6 +424,10 @@ endif
 TESTS = $(unit_tests)
 AM_TESTS_ENVIRONMENT = MALLOC_CHECK_=3 MALLOC_PERTURB_=69
 
+if DBUS_RUN_SESSION
+AM_TESTS_ENVIRONMENT += dbus-run-session --
+endif
+
 pkgconfigdir = $(libdir)/pkgconfig
 
 if LIBRARY
@@ -434,7 +443,7 @@ endif
 EXTRA_DIST += $(manual_pages:.1=.txt)
 
 DISTCHECK_CONFIGURE_FLAGS = --disable-datafiles --enable-library \
-					--enable-manpages \
+					--enable-manpages --enable-android \
 					--disable-systemd --disable-udev
 
 DISTCLEANFILES = $(pkgconfig_DATA) $(unit_tests) $(manual_pages)

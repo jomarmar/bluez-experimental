@@ -114,6 +114,12 @@ static const char *ecode_to_string(uint8_t ecode)
 		return "Group type Not Supported";
 	case BT_ATT_ERROR_INSUFFICIENT_RESOURCES:
 		return "Insufficient Resources";
+	case BT_ERROR_CCC_IMPROPERLY_CONFIGURED:
+		return "CCC Improperly Configured";
+	case BT_ERROR_ALREADY_IN_PROGRESS:
+		return "Procedure Already in Progress";
+	case BT_ERROR_OUT_OF_RANGE:
+		return "Out of Range";
 	default:
 		return "Unknown error type";
 	}
@@ -179,7 +185,7 @@ static struct client *client_create(int fd, uint16_t mtu)
 		return NULL;
 	}
 
-	cli->att = bt_att_new(fd);
+	cli->att = bt_att_new(fd, false);
 	if (!cli->att) {
 		fprintf(stderr, "Failed to initialze ATT transport layer\n");
 		bt_att_unref(cli->att);
@@ -1195,15 +1201,15 @@ static void cmd_unregister_notify(struct client *cli, char *cmd_str)
 	printf("Unregistered notify handler with id: %u\n", id);
 }
 
-static void set_sec_level_usage(void)
+static void set_security_usage(void)
 {
-	printf("Usage: set_sec_level <level>\n"
+	printf("Usage: set_security <level>\n"
 		"level: 1-3\n"
 		"e.g.:\n"
 		"\tset-sec-level 2\n");
 }
 
-static void cmd_set_sec_level(struct client *cli, char *cmd_str)
+static void cmd_set_security(struct client *cli, char *cmd_str)
 {
 	char *argvbuf[1];
 	char **argv = argvbuf;
@@ -1218,12 +1224,12 @@ static void cmd_set_sec_level(struct client *cli, char *cmd_str)
 
 	if (!parse_args(cmd_str, 1, argv, &argc)) {
 		printf("Too many arguments\n");
-		set_sec_level_usage();
+		set_security_usage();
 		return;
 	}
 
 	if (argc < 1) {
-		set_sec_level_usage();
+		set_security_usage();
 		return;
 	}
 
@@ -1233,13 +1239,13 @@ static void cmd_set_sec_level(struct client *cli, char *cmd_str)
 		return;
 	}
 
-	if (!bt_gatt_client_set_sec_level(cli->gatt, level))
+	if (!bt_gatt_client_set_security(cli->gatt, level))
 		printf("Could not set sec level\n");
 	else
 		printf("Setting security level %d success\n", level);
 }
 
-static void cmd_get_sec_level(struct client *cli, char *cmd_str)
+static void cmd_get_security(struct client *cli, char *cmd_str)
 {
 	int level;
 
@@ -1248,7 +1254,7 @@ static void cmd_get_sec_level(struct client *cli, char *cmd_str)
 		return;
 	}
 
-	level = bt_gatt_client_get_sec_level(cli->gatt);
+	level = bt_gatt_client_get_security(cli->gatt);
 	if (level < 0)
 		printf("Could not set sec level\n");
 	else
@@ -1342,9 +1348,9 @@ static struct {
 			"\tSubscribe to not/ind from a characteristic" },
 	{ "unregister-notify", cmd_unregister_notify,
 						"Unregister a not/ind session"},
-	{ "set-sec-level", cmd_set_sec_level,
+	{ "set-security", cmd_set_security,
 				"\tSet security level on le connection"},
-	{ "get-sec-level", cmd_get_sec_level,
+	{ "get-security", cmd_get_security,
 				"\tGet security level on le connection"},
 	{ "set-sign-key", cmd_set_sign_key,
 				"\tSet signing key for signed write command"},

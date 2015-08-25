@@ -48,7 +48,7 @@ struct btd_advertising {
 	uint16_t mgmt_index;
 	uint8_t max_adv_len;
 	uint8_t max_ads;
-	unsigned int next_instance_id;
+	unsigned int instance_bitmap;
 };
 
 #define AD_TYPE_BROADCAST 0
@@ -154,6 +154,8 @@ static void advertisement_remove(void *data)
 			NULL);
 
 	queue_remove(ad->manager->ads, ad);
+
+	util_clear_uid(&ad->manager->instance_bitmap, ad->instance);
 
 	g_idle_add(advertisement_free_idle_cb, ad);
 }
@@ -395,24 +397,48 @@ static bool parse_advertising_include_tx_power(GDBusProxy *proxy,
 	return true;
 }
 
+static void add_adverting_complete(struct advertisement *ad, uint8_t status)
+{
+	DBusMessage *reply;
+
+	if (status) {
+		error("Failed to add advertisement: %s (0x%02x)",
+						mgmt_errstr(status), status);
+		reply = btd_error_failed(ad->reg,
+					"Failed to register advertisement");
+		queue_remove(ad->manager->ads, ad);
+		g_idle_add(advertisement_free_idle_cb, ad);
+
+	} else
+		reply = dbus_message_new_method_return(ad->reg);
+
+	g_dbus_send_message(btd_get_dbus_connection(), reply);
+	dbus_message_unref(ad->reg);
+	ad->reg = NULL;
+}
+
 static void add_advertising_callback(uint8_t status, uint16_t length,
 					  const void *param, void *user_data)
 {
 	struct advertisement *ad = user_data;
 	const struct mgmt_rp_add_advertising *rp = param;
 
-	if (status || !param) {
-		error("Failed to add advertisement: %s (0x%02x)",
-						mgmt_errstr(status), status);
-		return;
-	}
+	if (status)
+		goto done;
 
-	if (length < sizeof(*rp)) {
-		error("Wrong size of add advertising response");
-		return;
+	if (!param || length < sizeof(*rp)) {
+		status = MGMT_STATUS_FAILED;
+		goto done;
 	}
 
 	ad->instance = rp->instance;
+
+	g_dbus_client_set_disconnect_watch(ad->client, client_disconnect_cb,
+									ad);
+	DBG("Advertisement registered: %s", ad->path);
+
+done:
+	add_adverting_complete(ad, status);
 }
 
 static size_t calc_max_adv_len(struct advertisement *ad, uint32_t flags)
@@ -541,24 +567,14 @@ static void advertisement_proxy_added(GDBusProxy *proxy, void *data)
 	DBusMessage *reply;
 
 	reply = parse_advertisement(ad);
+	if (!reply)
+		return;
 
-	if (reply) {
-		/* Failed to publish for some reason, remove. */
-		queue_remove(ad->manager->ads, ad);
+	/* Failed to publish for some reason, remove. */
+	queue_remove(ad->manager->ads, ad);
 
-		g_idle_add(advertisement_free_idle_cb, ad);
+	g_idle_add(advertisement_free_idle_cb, ad);
 
-		goto done;
-	}
-
-	g_dbus_client_set_disconnect_watch(ad->client, client_disconnect_cb,
-									ad);
-
-	reply = dbus_message_new_method_return(ad->reg);
-
-	DBG("Advertisement registered: %s", ad->path);
-
-done:
 	g_dbus_send_message(btd_get_dbus_connection(), reply);
 
 	dbus_message_unref(ad->reg);
@@ -619,6 +635,7 @@ static DBusMessage *register_advertisement(DBusConnection *conn,
 	DBusMessageIter args;
 	struct advertisement *ad;
 	struct dbus_obj_match match;
+	uint8_t instance;
 
 	DBG("RegisterAdvertisement");
 
@@ -635,7 +652,8 @@ static DBusMessage *register_advertisement(DBusConnection *conn,
 	if (queue_find(manager->ads, match_advertisement, &match))
 		return btd_error_already_exists(msg);
 
-	if (queue_length(manager->ads) >= manager->max_ads)
+	instance = util_get_uid(&manager->instance_bitmap, manager->max_ads);
+	if (!instance)
 		return btd_error_failed(msg, "Maximum advertisements reached");
 
 	dbus_message_iter_next(&args);
@@ -650,7 +668,7 @@ static DBusMessage *register_advertisement(DBusConnection *conn,
 
 	DBG("Registered advertisement at path %s", match.path);
 
-	ad->instance = manager->next_instance_id++;
+	ad->instance = instance;
 	ad->manager = manager;
 
 	queue_push_tail(manager->ads, ad);
@@ -730,6 +748,15 @@ static void read_adv_features_callback(uint8_t status, uint16_t length,
 
 	manager->max_adv_len = feat->max_adv_data_len;
 	manager->max_ads = feat->max_instances;
+
+	if (manager->max_ads == 0)
+		return;
+
+	if (!g_dbus_register_interface(btd_get_dbus_connection(),
+					adapter_get_path(manager->adapter),
+					LE_ADVERTISING_MGR_IFACE,
+					methods, NULL, NULL, manager, NULL))
+		error("Failed to register " LE_ADVERTISING_MGR_IFACE);
 }
 
 static struct btd_advertising *
@@ -761,19 +788,7 @@ advertising_manager_create(struct btd_adapter *adapter)
 		return NULL;
 	}
 
-	if (!g_dbus_register_interface(btd_get_dbus_connection(),
-						adapter_get_path(adapter),
-						LE_ADVERTISING_MGR_IFACE,
-						methods, NULL, NULL, manager,
-						advertising_manager_destroy)) {
-		error("Failed to register " LE_ADVERTISING_MGR_IFACE);
-		free(manager);
-		return NULL;
-	}
-
 	manager->ads = queue_new();
-
-	manager->next_instance_id = 1;
 
 	return manager;
 }
@@ -804,4 +819,6 @@ void btd_advertising_manager_destroy(struct btd_advertising *manager)
 	g_dbus_unregister_interface(btd_get_dbus_connection(),
 					adapter_get_path(manager->adapter),
 					LE_ADVERTISING_MGR_IFACE);
+
+	advertising_manager_destroy(manager);
 }

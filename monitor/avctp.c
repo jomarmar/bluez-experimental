@@ -141,6 +141,7 @@
 #define AVRCP_CHANGE_PATH		0x72
 #define AVRCP_GET_ITEM_ATTRIBUTES	0x73
 #define AVRCP_PLAY_ITEM			0x74
+#define AVRCP_GET_TOTAL_NUMBER_OF_ITEMS	0x75
 #define AVRCP_SEARCH			0x80
 #define AVRCP_ADD_TO_NOW_PLAYING	0x90
 #define AVRCP_GENERAL_REJECT		0xA0
@@ -440,6 +441,8 @@ static const char *pdu2str(uint8_t pduid)
 		return "GetItemAttributes";
 	case AVRCP_PLAY_ITEM:
 		return "PlayItem";
+	case AVRCP_GET_TOTAL_NUMBER_OF_ITEMS:
+		return "GetTotalNumOfItems";
 	case AVRCP_SEARCH:
 		return "Search";
 	case AVRCP_ADD_TO_NOW_PLAYING:
@@ -1815,9 +1818,9 @@ static bool avrcp_media_player_item(struct avctp_frame *avctp_frame,
 {
 	struct l2cap_frame *frame = &avctp_frame->l2cap_frame;
 	uint16_t id, charset, namelen;
-	uint8_t type, status;
+	uint8_t type, status, i;
 	uint32_t subtype;
-	uint64_t features[2];
+	uint8_t features[16];
 
 	if (!l2cap_frame_get_be16(frame, &id))
 		return false;
@@ -1827,26 +1830,31 @@ static bool avrcp_media_player_item(struct avctp_frame *avctp_frame,
 	if (!l2cap_frame_get_u8(frame, &type))
 		return false;
 
-	print_field("%*cPlayerID: 0x%04x (%s)", indent, ' ',
+	print_field("%*cPlayerType: 0x%04x (%s)", indent, ' ',
 						type, playertype2str(type));
 
 	if (!l2cap_frame_get_be32(frame, &subtype))
 		return false;
 
-	print_field("%*cPlayerID: 0x%08x (%s)", indent, ' ',
+	print_field("%*cPlayerSubType: 0x%08x (%s)", indent, ' ',
 					subtype, playersubtype2str(subtype));
 
 	if (!l2cap_frame_get_u8(frame, &status))
 		return false;
 
-	print_field("%*cPlayerID: 0x%02x (%s)", indent, ' ',
+	print_field("%*cPlayStatus: 0x%02x (%s)", indent, ' ',
 						status, playstatus2str(status));
 
-	if (!l2cap_frame_get_be128(frame, &features[0], &features[1]))
-		return false;
+	printf("%*cFeatures: 0x", indent+8, ' ');
 
-	print_field("%*cFeatures: 0x%16" PRIx64 "%16" PRIx64, indent, ' ',
-						features[1], features[0]);
+	for (i = 0; i < 16; i++) {
+		if (!l2cap_frame_get_u8(frame, &features[i]))
+			return false;
+
+		printf("%02x", features[i]);
+	}
+
+	printf("\n");
 
 	if (!l2cap_frame_get_be16(frame, &charset))
 		return false;
@@ -1860,7 +1868,7 @@ static bool avrcp_media_player_item(struct avctp_frame *avctp_frame,
 	print_field("%*cNameLength: 0x%04x (%u)", indent, ' ',
 						namelen, namelen);
 
-	printf("%*cName: ", indent, ' ');
+	printf("%*cName: ", indent+8, ' ');
 	for (; namelen > 0; namelen--) {
 		uint8_t c;
 
@@ -1868,6 +1876,7 @@ static bool avrcp_media_player_item(struct avctp_frame *avctp_frame,
 			return false;
 		printf("%1c", isprint(c) ? c : '.');
 	}
+	printf("\n");
 
 	return true;
 }
@@ -2045,6 +2054,54 @@ response:
 	return true;
 }
 
+static bool avrcp_get_total_number_of_items(struct avctp_frame *avctp_frame)
+{
+	struct l2cap_frame *frame = &avctp_frame->l2cap_frame;
+	uint32_t num_of_items;
+	uint16_t uidcounter;
+	uint8_t scope, status, indent = 2;
+
+	if (avctp_frame->hdr & 0x02)
+		goto response;
+
+	if (frame->size < 4) {
+		printf("PDU Malformed\n");
+		packet_hexdump(frame->data, frame->size);
+		return false;
+	}
+
+	if (!l2cap_frame_get_u8(frame, &scope))
+		return false;
+
+	print_field("%*cScope: 0x%02x (%s)", (indent - 8), ' ',
+						scope, scope2str(scope));
+
+	return true;
+
+response:
+	if (!l2cap_frame_get_u8(frame, &status))
+		return false;
+
+	print_field("%*cStatus: 0x%02x (%s)", indent, ' ',
+				status, error2str(status));
+
+	if (frame->size == 1)
+		return false;
+
+	if (!l2cap_frame_get_be16(frame, &uidcounter))
+		return false;
+
+	print_field("%*cUIDCounter: 0x%04x (%u)", indent, ' ',
+				uidcounter, uidcounter);
+
+	if (!l2cap_frame_get_be32(frame, &num_of_items))
+		return false;
+
+	print_field("%*cNumber of Items: 0x%04x (%u)", indent, ' ',
+				num_of_items, num_of_items);
+
+	return true;
+}
 
 static bool avrcp_search_item(struct avctp_frame *avctp_frame)
 {
@@ -2245,7 +2302,7 @@ response:
 	if (!l2cap_frame_get_be16(frame, &num))
 		return false;
 
-	print_field("%*cUIDCounter: 0x%04x (%u)", indent, ' ', num, num);
+	print_field("%*cNumOfItems: 0x%04x (%u)", indent, ' ', num, num);
 
 	for (; num > 0; num--) {
 		uint8_t type;
@@ -2373,6 +2430,9 @@ static bool avrcp_browsing_packet(struct avctp_frame *avctp_frame)
 		break;
 	case AVRCP_GET_ITEM_ATTRIBUTES:
 		avrcp_get_item_attributes(avctp_frame);
+		break;
+	case AVRCP_GET_TOTAL_NUMBER_OF_ITEMS:
+		avrcp_get_total_number_of_items(avctp_frame);
 		break;
 	case AVRCP_SEARCH:
 		avrcp_search_item(avctp_frame);
