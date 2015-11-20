@@ -82,7 +82,6 @@ struct bt_att {
 	void *debug_data;
 
 	struct bt_crypto *crypto;
-	bool ext_signed;
 
 	struct sign_info *local_sign;
 	struct sign_info *remote_sign;
@@ -113,8 +112,8 @@ static const struct {
 	{ BT_ATT_OP_MTU_RSP,			ATT_OP_TYPE_RSP },
 	{ BT_ATT_OP_FIND_INFO_REQ,		ATT_OP_TYPE_REQ },
 	{ BT_ATT_OP_FIND_INFO_RSP,		ATT_OP_TYPE_RSP },
-	{ BT_ATT_OP_FIND_BY_TYPE_VAL_REQ,	ATT_OP_TYPE_REQ },
-	{ BT_ATT_OP_FIND_BY_TYPE_VAL_RSP,	ATT_OP_TYPE_RSP },
+	{ BT_ATT_OP_FIND_BY_TYPE_REQ,		ATT_OP_TYPE_REQ },
+	{ BT_ATT_OP_FIND_BY_TYPE_RSP,		ATT_OP_TYPE_RSP },
 	{ BT_ATT_OP_READ_BY_TYPE_REQ,		ATT_OP_TYPE_REQ },
 	{ BT_ATT_OP_READ_BY_TYPE_RSP,		ATT_OP_TYPE_RSP },
 	{ BT_ATT_OP_READ_REQ,			ATT_OP_TYPE_REQ },
@@ -157,7 +156,7 @@ static const struct {
 } att_req_rsp_mapping_table[] = {
 	{ BT_ATT_OP_MTU_REQ,			BT_ATT_OP_MTU_RSP },
 	{ BT_ATT_OP_FIND_INFO_REQ,		BT_ATT_OP_FIND_INFO_RSP},
-	{ BT_ATT_OP_FIND_BY_TYPE_VAL_REQ,	BT_ATT_OP_FIND_BY_TYPE_VAL_RSP },
+	{ BT_ATT_OP_FIND_BY_TYPE_REQ,		BT_ATT_OP_FIND_BY_TYPE_RSP },
 	{ BT_ATT_OP_READ_BY_TYPE_REQ,		BT_ATT_OP_READ_BY_TYPE_RSP },
 	{ BT_ATT_OP_READ_REQ,			BT_ATT_OP_READ_RSP },
 	{ BT_ATT_OP_READ_BLOB_REQ,		BT_ATT_OP_READ_BLOB_RSP },
@@ -294,7 +293,7 @@ static bool encode_pdu(struct bt_att *att, struct att_send_op *op,
 	if (pdu_len > 1)
 		memcpy(op->pdu + 1, pdu, length);
 
-	if (!sign || !(op->opcode & ATT_OP_SIGNED_MASK))
+	if (!sign || !(op->opcode & ATT_OP_SIGNED_MASK) || !att->crypto)
 		return true;
 
 	if (!sign->counter(&sign_cnt, sign->user_data))
@@ -321,33 +320,30 @@ static struct att_send_op *create_att_send_op(struct bt_att *att,
 						bt_att_destroy_func_t destroy)
 {
 	struct att_send_op *op;
-	enum att_op_type op_type;
+	enum att_op_type type;
 
 	if (length && !pdu)
 		return NULL;
 
-	op_type = get_op_type(opcode);
-	if (op_type == ATT_OP_TYPE_UNKNOWN)
+	type = get_op_type(opcode);
+	if (type == ATT_OP_TYPE_UNKNOWN)
 		return NULL;
 
 	/* If the opcode corresponds to an operation type that does not elicit a
 	 * response from the remote end, then no callback should have been
 	 * provided, since it will never be called.
 	 */
-	if (callback && op_type != ATT_OP_TYPE_REQ && op_type != ATT_OP_TYPE_IND)
+	if (callback && type != ATT_OP_TYPE_REQ && type != ATT_OP_TYPE_IND)
 		return NULL;
 
 	/* Similarly, if the operation does elicit a response then a callback
 	 * must be provided.
 	 */
-	if (!callback && (op_type == ATT_OP_TYPE_REQ || op_type == ATT_OP_TYPE_IND))
+	if (!callback && (type == ATT_OP_TYPE_REQ || type == ATT_OP_TYPE_IND))
 		return NULL;
 
 	op = new0(struct att_send_op, 1);
-	if (!op)
-		return NULL;
-
-	op->type = op_type;
+	op->type = type;
 	op->opcode = opcode;
 	op->callback = callback;
 	op->destroy = destroy;
@@ -497,9 +493,6 @@ static bool can_write_data(struct io *io, void *user_data)
 	}
 
 	timeout = new0(struct timeout_data, 1);
-	if (!timeout)
-		return true;
-
 	timeout->att = att;
 	timeout->id = op->id;
 	op->timeout_id = timeout_add(ATT_TIMEOUT_INTERVAL, timeout_cb,
@@ -782,7 +775,7 @@ static void handle_notify(struct bt_att *att, uint8_t opcode, uint8_t *pdu,
 	const struct queue_entry *entry;
 	bool found;
 
-	if ((opcode & ATT_OP_SIGNED_MASK) && !att->ext_signed) {
+	if ((opcode & ATT_OP_SIGNED_MASK) && !att->crypto) {
 		if (!handle_signed(att, opcode, pdu, pdu_len))
 			return;
 		pdu_len -= BT_ATT_SIGNATURE_LEN;
@@ -958,11 +951,7 @@ struct bt_att *bt_att_new(int fd, bool ext_signed)
 		return NULL;
 
 	att = new0(struct bt_att, 1);
-	if (!att)
-		return NULL;
-
 	att->fd = fd;
-	att->ext_signed = ext_signed;
 	att->mtu = BT_ATT_DEFAULT_LE_MTU;
 	att->buf = malloc(att->mtu);
 	if (!att->buf)
@@ -977,24 +966,10 @@ struct bt_att *bt_att_new(int fd, bool ext_signed)
 		att->crypto = bt_crypto_new();
 
 	att->req_queue = queue_new();
-	if (!att->req_queue)
-		goto fail;
-
 	att->ind_queue = queue_new();
-	if (!att->ind_queue)
-		goto fail;
-
 	att->write_queue = queue_new();
-	if (!att->write_queue)
-		goto fail;
-
 	att->notify_list = queue_new();
-	if (!att->notify_list)
-		goto fail;
-
 	att->disconn_list = queue_new();
-	if (!att->disconn_list)
-		goto fail;
 
 	if (!io_set_read_handler(att->io, can_read_data, att, NULL))
 		goto fail;
@@ -1128,9 +1103,6 @@ unsigned int bt_att_register_disconnect(struct bt_att *att,
 		return 0;
 
 	disconn = new0(struct att_disconn, 1);
-	if (!disconn)
-		return 0;
-
 	disconn->callback = callback;
 	disconn->destroy = destroy;
 	disconn->user_data = user_data;
@@ -1344,9 +1316,6 @@ unsigned int bt_att_register(struct bt_att *att, uint8_t opcode,
 		return 0;
 
 	notify = new0(struct att_notify, 1);
-	if (!notify)
-		return 0;
-
 	notify->opcode = opcode;
 	notify->callback = callback;
 	notify->destroy = destroy;
@@ -1437,11 +1406,8 @@ bool bt_att_set_security(struct bt_att *att, int level)
 static bool sign_set_key(struct sign_info **sign, uint8_t key[16],
 				bt_att_counter_func_t func, void *user_data)
 {
-	if (!(*sign)) {
+	if (!(*sign))
 		*sign = new0(struct sign_info, 1);
-		if (!(*sign))
-			return false;
-	}
 
 	(*sign)->counter = func;
 	(*sign)->user_data = user_data;

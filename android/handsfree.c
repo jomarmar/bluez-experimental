@@ -228,8 +228,6 @@ static struct hf_device *device_create(const bdaddr_t *bdaddr)
 	struct hf_device *dev;
 
 	dev = new0(struct hf_device, 1);
-	if (!dev)
-		return NULL;
 
 	bacpy(&dev->bdaddr, bdaddr);
 	dev->setup_state = HAL_HANDSFREE_CALL_STATE_IDLE;
@@ -240,10 +238,7 @@ static struct hf_device *device_create(const bdaddr_t *bdaddr)
 
 	init_codecs(dev);
 
-	if (!queue_push_head(devices, dev)) {
-		free(dev);
-		return NULL;
-	}
+	queue_push_head(devices, dev);
 
 	return dev;
 }
@@ -1067,6 +1062,7 @@ static void at_cmd_bcs(struct hfp_context *result, enum hfp_gw_cmd_type type,
 								void *user_data)
 {
 	struct hf_device *dev = user_data;
+	struct hal_ev_handsfree_wbs ev;
 	unsigned int val;
 
 	DBG("");
@@ -1084,6 +1080,12 @@ static void at_cmd_bcs(struct hfp_context *result, enum hfp_gw_cmd_type type,
 			dev->proposed_codec = 0;
 			break;
 		}
+
+		ev.wbs = val;
+		bdaddr2android(&dev->bdaddr, ev.bdaddr);
+
+		ipc_send_notif(hal_ipc, HAL_SERVICE_ID_HANDSFREE,
+					HAL_EV_HANDSFREE_WBS, sizeof(ev), &ev);
 
 		dev->proposed_codec = 0;
 		dev->negotiated_codec = val;
@@ -2961,8 +2963,6 @@ bool bt_handsfree_register(struct ipc *ipc, const bdaddr_t *addr, uint8_t mode,
 		return false;
 
 	devices = queue_new();
-	if (!devices)
-		return false;
 
 	if (!enable_hsp_ag())
 		goto failed_queue;

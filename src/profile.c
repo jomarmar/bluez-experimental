@@ -736,10 +736,10 @@ static struct ext_profile *find_ext_profile(const char *owner,
 	for (l = ext_profiles; l != NULL; l = g_slist_next(l)) {
 		struct ext_profile *ext = l->data;
 
-		if (!g_str_equal(ext->owner, owner))
+		if (g_strcmp0(ext->owner, owner))
 			continue;
 
-		if (g_str_equal(ext->path, path))
+		if (!g_strcmp0(ext->path, path))
 			return ext;
 	}
 
@@ -2291,6 +2291,7 @@ static struct ext_profile *create_ext(const char *owner, const char *path,
 	p->name = ext->name;
 	p->local_uuid = ext->service ? ext->service : ext->uuid;
 	p->remote_uuid = ext->remote_uuid;
+	p->external = true;
 
 	if (ext->enable_server) {
 		p->adapter_probe = ext_adapter_probe;

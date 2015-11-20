@@ -77,10 +77,10 @@ static bool match_advertisement(const void *a, const void *b)
 	const struct advertisement *ad = a;
 	const struct dbus_obj_match *match = b;
 
-	if (match->owner && !g_strcmp0(ad->owner, match->owner))
+	if (match->owner && g_strcmp0(ad->owner, match->owner))
 		return false;
 
-	if (match->path && !g_strcmp0(ad->path, match->path))
+	if (match->path && g_strcmp0(ad->path, match->path))
 		return false;
 
 	return true;
@@ -591,9 +591,6 @@ static struct advertisement *advertisement_create(DBusConnection *conn,
 		return NULL;
 
 	ad = new0(struct advertisement, 1);
-	if (!ad)
-		return NULL;
-
 	ad->client = g_dbus_client_new_full(conn, sender, path, path);
 	if (!ad->client)
 		goto fail;
@@ -765,9 +762,6 @@ advertising_manager_create(struct btd_adapter *adapter)
 	struct btd_advertising *manager;
 
 	manager = new0(struct btd_advertising, 1);
-	if (!manager)
-		return NULL;
-
 	manager->adapter = adapter;
 
 	manager->mgmt = mgmt_new_default();

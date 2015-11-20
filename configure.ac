@@ -1,5 +1,5 @@
 AC_PREREQ(2.60)
-AC_INIT(bluez, 5.33)
+AC_INIT(bluez, 5.36)
 
 AM_INIT_AUTOMAKE([foreign subdir-objects color-tests silent-rules
 					tar-pax no-dist-gzip dist-xz])
@@ -35,9 +35,12 @@ AC_PROG_LIBTOOL
 if (test "$USE_MAINTAINER_MODE" = "yes"); then
 	AC_CHECK_PROG(enable_coverage, [lcov], [yes], [no])
 	AC_CHECK_PROG(enable_dbus_run_session, [dbus-run-session], [yes])
+	AC_CHECK_PROG(enable_valgrind, [valgrind], [yes])
+	AC_CHECK_HEADERS(valgrind/memcheck.h)
 fi
 AM_CONDITIONAL(COVERAGE, test "${enable_coverage}" = "yes")
 AM_CONDITIONAL(DBUS_RUN_SESSION, test "${enable_dbus_run_session}" = "yes")
+AM_CONDITIONAL(VALGRIND, test "${enable_valgrind}" = "yes")
 
 MISC_FLAGS
 
@@ -114,6 +117,20 @@ if (test -z "${path_dbussessionbusdir}"); then
 	AC_MSG_RESULT([${path_dbussessionbusdir}])
 fi
 AC_SUBST(DBUS_SESSIONBUSDIR, [${path_dbussessionbusdir}])
+
+AC_ARG_ENABLE(backtrace, AC_HELP_STRING([--enable-backtrace],
+		[compile backtrace support]), [enable_backtrace=${enableval}])
+
+if (test "${enable_backtrace}" = "yes"); then
+	AC_CHECK_HEADER(elfutils/libdwfl.h, dummy=yes,
+			AC_MSG_ERROR(elfutils support is required))
+	AC_DEFINE(HAVE_BACKTRACE_SUPPORT, 1,
+			[Define to 1 if you have the backtrace support.])
+	BACKTRACE_CFLAGS=""
+	BACKTRACE_LIBS="-ldw"
+	AC_SUBST(BACKTRACE_CFLAGS)
+	AC_SUBST(BACKTRACE_LIBS)
+fi
 
 AC_ARG_ENABLE(library, AC_HELP_STRING([--enable-library],
 		[install Bluetooth library]), [enable_library=${enableval}])

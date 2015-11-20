@@ -39,10 +39,10 @@ include $(CLEAR_VARS)
 LOCAL_SRC_FILES := \
 	bluez/android/main.c \
 	bluez/android/bluetooth.c \
-	bluez/android/scpp.c \
-	bluez/android/dis.c \
-	bluez/android/bas.c \
-	bluez/android/hog.c \
+	bluez/profiles/scanparam/scpp.c \
+	bluez/profiles/deviceinfo/dis.c \
+	bluez/profiles/battery/bas.c \
+	bluez/profiles/input/hog-lib.c \
 	bluez/android/hidhost.c \
 	bluez/android/socket.c \
 	bluez/android/ipc.c \
@@ -351,6 +351,8 @@ LOCAL_SRC_FILES := \
 	bluez/monitor/keys.c \
 	bluez/monitor/ellisys.c \
 	bluez/monitor/analyze.c \
+	bluez/monitor/intel.c \
+	bluez/monitor/broadcom.c \
 	bluez/src/shared/util.c \
 	bluez/src/shared/queue.c \
 	bluez/src/shared/crypto.c \

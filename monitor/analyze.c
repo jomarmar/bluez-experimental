@@ -255,18 +255,18 @@ void analyze_trace(const char *path)
 {
 	struct btsnoop *btsnoop_file;
 	unsigned long num_packets = 0;
-	uint32_t type;
+	uint32_t format;
 
 	btsnoop_file = btsnoop_open(path, BTSNOOP_FLAG_PKLG_SUPPORT);
 	if (!btsnoop_file)
 		return;
 
-	type = btsnoop_get_type(btsnoop_file);
+	format = btsnoop_get_format(btsnoop_file);
 
-	switch (type) {
-	case BTSNOOP_TYPE_HCI:
-	case BTSNOOP_TYPE_UART:
-	case BTSNOOP_TYPE_MONITOR:
+	switch (format) {
+	case BTSNOOP_FORMAT_HCI:
+	case BTSNOOP_FORMAT_UART:
+	case BTSNOOP_FORMAT_MONITOR:
 		break;
 	default:
 		fprintf(stderr, "Unsupported packet format\n");
@@ -308,6 +308,9 @@ void analyze_trace(const char *path)
 		case BTSNOOP_OPCODE_SCO_TX_PKT:
 		case BTSNOOP_OPCODE_SCO_RX_PKT:
 			sco_pkt(&tv, index, buf, pktlen);
+			break;
+		case BTSNOOP_OPCODE_OPEN_INDEX:
+		case BTSNOOP_OPCODE_CLOSE_INDEX:
 			break;
 		default:
 			fprintf(stderr, "Wrong opcode %u\n", opcode);

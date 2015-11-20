@@ -437,8 +437,6 @@ struct generic_data {
 	uint8_t adv_data_len;
 };
 
-# define TESTER_NOOP_OPCODE 0x0000
-
 static const char dummy_data[] = { 0x00 };
 
 static const struct generic_data invalid_command_test = {
@@ -1859,7 +1857,7 @@ static const struct generic_data start_discovery_valid_param_test_2 = {
 };
 
 static const struct generic_data start_discovery_valid_param_power_off_1 = {
-	.setup_settings = settings_powered_le,
+	.setup_settings = settings_le,
 	.send_opcode = MGMT_OP_START_DISCOVERY,
 	.send_param = start_discovery_bredrle_param,
 	.send_len = sizeof(start_discovery_bredrle_param),
@@ -3848,16 +3846,12 @@ static const struct generic_data remove_device_success_3 = {
 	.expect_alt_ev = MGMT_EV_DEVICE_REMOVED,
 	.expect_alt_ev_param = remove_device_param_1,
 	.expect_alt_ev_len = sizeof(remove_device_param_1),
-	.expect_hci_command = BT_HCI_CMD_WRITE_SCAN_ENABLE,
-	.expect_hci_param = set_connectable_off_scan_enable_param,
-	.expect_hci_len = sizeof(set_connectable_off_scan_enable_param),
 };
 
 static const uint8_t remove_device_param_2[] =  {
 					0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
 					0x01,
 };
-static const uint8_t set_le_scan_off[] = { 0x00, 0x00 };
 static const struct generic_data remove_device_success_4 = {
 	.setup_settings = settings_powered,
 	.send_opcode = MGMT_OP_REMOVE_DEVICE,
@@ -3869,9 +3863,6 @@ static const struct generic_data remove_device_success_4 = {
 	.expect_alt_ev = MGMT_EV_DEVICE_REMOVED,
 	.expect_alt_ev_param = remove_device_param_2,
 	.expect_alt_ev_len = sizeof(remove_device_param_2),
-	.expect_hci_command = BT_HCI_CMD_LE_SET_SCAN_ENABLE,
-	.expect_hci_param = set_le_scan_off,
-	.expect_hci_len = sizeof(set_le_scan_off),
 };
 
 static const struct generic_data remove_device_success_5 = {
@@ -3884,9 +3875,6 @@ static const struct generic_data remove_device_success_5 = {
 	.expect_alt_ev = MGMT_EV_DEVICE_REMOVED,
 	.expect_alt_ev_param = remove_device_param_2,
 	.expect_alt_ev_len = sizeof(remove_device_param_2),
-	.expect_hci_command = BT_HCI_CMD_LE_SET_SCAN_ENABLE,
-	.expect_hci_param = set_le_scan_off,
-	.expect_hci_len = sizeof(set_le_scan_off),
 };
 
 static const struct generic_data read_adv_features_invalid_param_test = {
@@ -4601,7 +4589,6 @@ static const struct generic_data add_advertising_success_18 = {
 };
 
 static const struct generic_data add_advertising_timeout_expired = {
-	.send_opcode = TESTER_NOOP_OPCODE,
 	.expect_alt_ev = MGMT_EV_ADVERTISING_REMOVED,
 	.expect_alt_ev_param = advertising_instance1_param,
 	.expect_alt_ev_len = sizeof(advertising_instance1_param),
@@ -4656,7 +4643,6 @@ static const struct generic_data remove_advertising_success_2 = {
 };
 
 static const struct generic_data multi_advertising_switch = {
-	.send_opcode = TESTER_NOOP_OPCODE,
 	.expect_alt_ev = MGMT_EV_ADVERTISING_REMOVED,
 	.expect_alt_ev_param = advertising_instance1_param,
 	.expect_alt_ev_len = sizeof(advertising_instance1_param),
@@ -4705,6 +4691,30 @@ static const struct generic_data device_found_gtag = {
 	.set_adv = true,
 	.adv_data_len = sizeof(adv_data_invalid_significant_len),
 	.adv_data = adv_data_invalid_significant_len,
+};
+
+static const uint8_t adv_data_invalid_field_len[] = { 0x02, 0x01, 0x01,
+		0x05, 0x09, 0x74, 0x65, 0x73, 0x74,
+		0xa0, 0xff, 0x01, 0x02, 0x03, 0x04, 0x05};
+
+static const char device_found_valid2[] = { 0x00, 0x00, 0x01, 0x01, 0xaa, 0x00,
+		0x01, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x02, 0x01,
+		0x01, 0x05, 0x09, 0x74, 0x65, 0x73, 0x74};
+
+static const struct generic_data device_found_invalid_field = {
+	.setup_settings = settings_powered_le,
+	.send_opcode = MGMT_OP_START_DISCOVERY,
+	.send_param = start_discovery_le_param,
+	.send_len = sizeof(start_discovery_le_param),
+	.expect_status = MGMT_STATUS_SUCCESS,
+	.expect_param = start_discovery_le_param,
+	.expect_len = sizeof(start_discovery_le_param),
+	.expect_alt_ev = MGMT_EV_DEVICE_FOUND,
+	.expect_alt_ev_param = device_found_valid2,
+	.expect_alt_ev_len = sizeof(device_found_valid2),
+	.set_adv = true,
+	.adv_data_len = sizeof(adv_data_invalid_field_len),
+	.adv_data = adv_data_invalid_field_len,
 };
 
 static const struct generic_data read_local_oob_not_powered_test = {
@@ -5831,6 +5841,34 @@ static void test_command_generic(const void *test_data)
 	test_add_condition(data);
 }
 
+static void check_scan(void *user_data)
+{
+	struct test_data *data = tester_get_data();
+
+	if (hciemu_get_master_le_scan_enable(data->hciemu)) {
+		tester_warn("LE scan still enabled");
+		tester_test_failed();
+		return;
+	}
+
+	if (hciemu_get_master_scan_enable(data->hciemu)) {
+		tester_warn("BR/EDR scan still enabled");
+		tester_test_failed();
+		return;
+	}
+
+	test_condition_complete(data);
+}
+
+static void test_remove_device(const void *test_data)
+{
+	struct test_data *data = tester_get_data();
+
+	test_command_generic(test_data);
+	tester_wait(1, check_scan, NULL);
+	test_add_condition(data);
+}
+
 static void test_device_found(const void *test_data)
 {
 	struct test_data *data = tester_get_data();
@@ -6763,13 +6801,13 @@ int main(int argc, char *argv[])
 				setup_add_device, test_command_generic);
 	test_bredrle("Remove Device - Success 3",
 				&remove_device_success_3,
-				setup_add_device, test_command_generic);
+				setup_add_device, test_remove_device);
 	test_le("Remove Device - Success 4",
 				&remove_device_success_4,
-				setup_add_device, test_command_generic);
+				setup_add_device, test_remove_device);
 	test_le("Remove Device - Success 5",
 				&remove_device_success_5,
-				setup_add_device, test_command_generic);
+				setup_add_device, test_remove_device);
 
 	test_bredrle("Read Advertising Features - Invalid parameters",
 				&read_adv_features_invalid_param_test,
@@ -6957,8 +6995,11 @@ int main(int argc, char *argv[])
 				&read_local_oob_success_sc_test,
 				NULL, test_command_generic);
 
-	test_bredrle("Device Found - Invalid remote ADV_DATA",
+	test_bredrle("Device Found - Advertising data - Zero padded",
 				&device_found_gtag,
+				NULL, test_device_found);
+	test_bredrle("Device Found - Advertising data - Invalid field",
+				&device_found_invalid_field,
 				NULL, test_device_found);
 
 	return tester_run();

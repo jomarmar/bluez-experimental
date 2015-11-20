@@ -73,6 +73,9 @@ static uint32_t get_flags_from_opcode(uint16_t opcode)
 	case BTSNOOP_OPCODE_SCO_TX_PKT:
 	case BTSNOOP_OPCODE_SCO_RX_PKT:
 		break;
+	case BTSNOOP_OPCODE_OPEN_INDEX:
+	case BTSNOOP_OPCODE_CLOSE_INDEX:
+		break;
 	}
 
 	return 0xff;
@@ -145,7 +148,7 @@ static int open_monitor(const char *path)
 	struct sockaddr_hci addr;
 	int opt = 1;
 
-	snoop = btsnoop_create(path, BTSNOOP_TYPE_HCI);
+	snoop = btsnoop_create(path, BTSNOOP_FORMAT_HCI);
 	if (!snoop)
 		return -1;
 
