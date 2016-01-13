@@ -79,7 +79,7 @@ static void read_version_callback(uint8_t status, uint16_t length,
 	const struct mgmt_rp_read_version *rp = param;
 
 	tester_print("Read Version callback");
-	tester_print("  Status: 0x%02x", status);
+	tester_print("  Status: %s (0x%02x)", mgmt_errstr(status), status);
 
 	if (status || !param) {
 		tester_pre_setup_failed();
@@ -97,7 +97,7 @@ static void read_commands_callback(uint8_t status, uint16_t length,
 					const void *param, void *user_data)
 {
 	tester_print("Read Commands callback");
-	tester_print("  Status: 0x%02x", status);
+	tester_print("  Status: %s (0x%02x)", mgmt_errstr(status), status);
 
 	if (status || !param) {
 		tester_pre_setup_failed();
@@ -116,7 +116,7 @@ static void read_info_callback(uint8_t status, uint16_t length,
 	struct bthost *bthost;
 
 	tester_print("Read Info callback");
-	tester_print("  Status: 0x%02x", status);
+	tester_print("  Status: %s (0x%02x)", mgmt_errstr(status), status);
 
 	if (status || !param) {
 		tester_pre_setup_failed();
@@ -216,7 +216,7 @@ static void read_index_list_callback(uint8_t status, uint16_t length,
 	struct test_data *data = tester_get_data();
 
 	tester_print("Read Index List callback");
-	tester_print("  Status: 0x%02x", status);
+	tester_print("  Status: %s (0x%02x)", mgmt_errstr(status), status);
 
 	if (status || !param) {
 		tester_pre_setup_failed();
@@ -582,6 +582,22 @@ static const struct generic_data set_powered_on_invalid_index_test = {
 	.send_param = set_powered_on_param,
 	.send_len = sizeof(set_powered_on_param),
 	.expect_status = MGMT_STATUS_INVALID_INDEX,
+};
+
+static uint16_t settings_powered_advertising_privacy[] = {
+						MGMT_OP_SET_PRIVACY,
+						MGMT_OP_SET_ADVERTISING,
+						MGMT_OP_SET_POWERED, 0 };
+
+static const char set_adv_off_param[] = { 0x00 };
+
+static const struct generic_data set_powered_on_privacy_adv_test = {
+	.setup_settings = settings_powered_advertising_privacy,
+	.send_opcode = MGMT_OP_SET_ADVERTISING,
+	.send_param = set_adv_off_param,
+	.send_len = sizeof(set_adv_off_param),
+	.expect_status = MGMT_STATUS_SUCCESS,
+	.expect_ignore_param = true,
 };
 
 static const uint16_t settings_powered[] = { MGMT_OP_SET_POWERED, 0 };
@@ -4353,8 +4369,6 @@ static const struct generic_data add_advertising_success_4 = {
 	.expect_hci_len = sizeof(set_adv_data_txpwr),
 };
 
-static const char set_adv_off_param[] = { 0x00 };
-
 static const struct generic_data add_advertising_success_5 = {
 	.send_opcode = MGMT_OP_SET_ADVERTISING,
 	.send_param = set_adv_off_param,
@@ -4770,14 +4784,16 @@ static void client_cmd_complete(uint16_t opcode, uint8_t status,
 	switch (opcode) {
 	case BT_HCI_CMD_WRITE_SCAN_ENABLE:
 	case BT_HCI_CMD_LE_SET_ADV_ENABLE:
-		tester_print("Client set connectable status 0x%02x", status);
+		tester_print("Client set connectable: %s (0x%02x)",
+						mgmt_errstr(status), status);
 		if (!status && test->client_enable_ssp) {
 			bthost_write_ssp_mode(bthost, 0x01);
 			return;
 		}
 		break;
 	case BT_HCI_CMD_WRITE_SIMPLE_PAIRING_MODE:
-		tester_print("Client enable SSP status 0x%02x", status);
+		tester_print("Client enable SSP: %s (0x%02x)",
+						mgmt_errstr(status), status);
 		break;
 	default:
 		return;
@@ -5089,7 +5105,7 @@ static void setup_add_device(const void *test_data)
 	const unsigned char *add_param;
 	size_t add_param_len;
 
-	tester_print("Powering on controller (with added device))");
+	tester_print("Powering on controller (with added device)");
 
 	if (data->hciemu_type == HCIEMU_TYPE_LE) {
 		add_param = add_device_success_param_2;
@@ -5563,6 +5579,9 @@ proceed:
 	for (cmd = test->setup_settings; *cmd; cmd++) {
 		unsigned char simple_param[] = { 0x01 };
 		unsigned char discov_param[] = { 0x01, 0x00, 0x00 };
+		unsigned char privacy_param[] = { 0x01,
+			0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+			0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08 };
 		unsigned char *param = simple_param;
 		size_t param_size = sizeof(simple_param);
 		mgmt_request_func_t func = NULL;
@@ -5579,6 +5598,11 @@ proceed:
 			}
 			param_size = sizeof(discov_param);
 			param = discov_param;
+		}
+
+		if (*cmd == MGMT_OP_SET_PRIVACY) {
+			param_size = sizeof(privacy_param);
+			param = privacy_param;
 		}
 
 		if (*cmd == MGMT_OP_SET_LE && test->setup_nobredr) {
@@ -5699,8 +5723,8 @@ static void command_generic_callback(uint8_t status, uint16_t length,
 	const void *expect_param = test->expect_param;
 	uint16_t expect_len = test->expect_len;
 
-	tester_print("Command 0x%04x finished with status 0x%02x",
-						test->send_opcode, status);
+	tester_print("%s (0x%04x): %s (0x%02x)", mgmt_opstr(test->send_opcode),
+			test->send_opcode, mgmt_errstr(status), status);
 
 	if (status != test->expect_status) {
 		tester_test_failed();
@@ -5822,7 +5846,8 @@ static void test_command_generic(const void *test_data)
 		return;
 	}
 
-	tester_print("Sending command 0x%04x", test->send_opcode);
+	tester_print("Sending %s (0x%04x)", mgmt_opstr(test->send_opcode),
+							test->send_opcode);
 
 	if (test->send_func)
 		send_param = test->send_func(&send_len);
@@ -5950,7 +5975,8 @@ static void connected_event(uint16_t index, uint16_t length, const void *param,
 	const void *send_param = test->send_param;
 	uint16_t send_len = test->send_len;
 
-	tester_print("Sending command 0x%04x", test->send_opcode);
+	tester_print("Sending %s 0x%04x", mgmt_opstr(test->send_opcode),
+							test->send_opcode);
 
 	if (test->send_func)
 		send_param = test->send_func(&send_len);
@@ -6077,6 +6103,9 @@ int main(int argc, char *argv[])
 				NULL, test_command_generic);
 	test_bredrle("Set powered on - Invalid index",
 				&set_powered_on_invalid_index_test,
+				NULL, test_command_generic);
+	test_le("Set powered on - Privacy and Advertising",
+				&set_powered_on_privacy_adv_test,
 				NULL, test_command_generic);
 
 	test_bredrle("Set powered off - Success",
