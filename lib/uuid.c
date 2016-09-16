@@ -183,14 +183,14 @@ static inline int is_uuid128(const char *string)
 static inline int is_base_uuid128(const char *string)
 {
 	uint16_t uuid;
-	char dummy;
+	char dummy[2];
 
 	if (!is_uuid128(string))
 		return 0;
 
 	return sscanf(string,
 		"0000%04hx-0000-1000-8000-00805%1[fF]9%1[bB]34%1[fF]%1[bB]",
-		&uuid, &dummy, &dummy, &dummy, &dummy) == 5;
+		&uuid, dummy, dummy, dummy, dummy) == 5;
 }
 
 static inline int is_uuid32(const char *string)
@@ -280,8 +280,11 @@ int bt_uuid_strcmp(const void *a, const void *b)
 {
 	bt_uuid_t u1, u2;
 
-	bt_string_to_uuid(&u1, a);
-	bt_string_to_uuid(&u2, b);
+	if (bt_string_to_uuid(&u1, a) < 0)
+		return -EINVAL;
+
+	if (bt_string_to_uuid(&u2, b) < 0)
+		return -EINVAL;
 
 	return bt_uuid_cmp(&u1, &u2);
 }

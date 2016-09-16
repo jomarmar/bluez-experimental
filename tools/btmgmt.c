@@ -223,18 +223,14 @@ static void print_eir(const uint8_t *eir, uint16_t eir_len)
 	}
 }
 
-static bool load_identity(uint16_t index, struct mgmt_irk_info *irk)
+static bool load_identity(const char *path, struct mgmt_irk_info *irk)
 {
-	char identity_path[PATH_MAX];
 	char *addr, *key;
 	unsigned int type;
 	int n;
 	FILE *fp;
 
-	snprintf(identity_path, sizeof(identity_path),
-			"/sys/kernel/debug/bluetooth/hci%u/identity", index);
-
-	fp = fopen(identity_path, "r");
+	fp = fopen(path, "r");
 	if (!fp) {
 		error("Failed to open identity file: %s", strerror(errno));
 		return false;
@@ -1394,6 +1390,56 @@ done:
 	noninteractive_quit(EXIT_SUCCESS);
 }
 
+static void ext_info_rsp(uint8_t status, uint16_t len, const void *param,
+							void *user_data)
+{
+	const struct mgmt_rp_read_ext_info *rp = param;
+	uint16_t index = PTR_TO_UINT(user_data);
+	uint32_t supported_settings, current_settings;
+	char addr[18];
+
+	if (status != 0) {
+		error("Reading hci%u info failed with status 0x%02x (%s)",
+					index, status, mgmt_errstr(status));
+		goto done;
+	}
+
+	if (len < sizeof(*rp)) {
+		error("Too small info reply (%u bytes)", len);
+		goto done;
+	}
+
+	print("hci%u:\tPrimary controller", index);
+
+	ba2str(&rp->bdaddr, addr);
+	print("\taddr %s version %u manufacturer %u",
+			addr, rp->version, le16_to_cpu(rp->manufacturer));
+
+	supported_settings = le32_to_cpu(rp->supported_settings);
+	print("\tsupported settings: %s", settings2str(supported_settings));
+
+	current_settings = le32_to_cpu(rp->current_settings);
+	print("\tcurrent settings: %s", settings2str(current_settings));
+
+	if (supported_settings & MGMT_SETTING_CONFIGURATION) {
+		if (!mgmt_send(mgmt, MGMT_OP_READ_CONFIG_INFO,
+					index, 0, NULL, config_options_rsp,
+					UINT_TO_PTR(index), NULL)) {
+			error("Unable to send read_config cmd");
+			goto done;
+		}
+		return;
+	}
+
+done:
+	pending_index--;
+
+	if (pending_index > 0)
+		return;
+
+	noninteractive_quit(EXIT_SUCCESS);
+}
+
 static void index_rsp(uint8_t status, uint16_t len, const void *param,
 							void *user_data)
 {
@@ -1498,10 +1544,10 @@ static void ext_index_rsp(uint8_t status, uint16_t len, const void *param,
 		switch (rp->entry[i].type) {
 		case 0x00:
 			print("Primary controller (hci%u,%s)", index, busstr);
-			if (!mgmt_send(mgmt, MGMT_OP_READ_INFO,
-						index, 0, NULL, info_rsp,
+			if (!mgmt_send(mgmt, MGMT_OP_READ_EXT_INFO,
+						index, 0, NULL, ext_info_rsp,
 						UINT_TO_PTR(index), NULL)) {
-				error("Unable to send read_info cmd");
+				error("Unable to send read_ext_info cmd");
 				return noninteractive_quit(EXIT_FAILURE);
 			}
 			pending_index++;
@@ -2592,7 +2638,7 @@ static void cmd_cancel_pair(struct mgmt *mgmt, uint16_t index, int argc,
 	str2ba(argv[0], &cp.bdaddr);
 	cp.type = type;
 
-	if (mgmt_send(mgmt, MGMT_OP_CANCEL_PAIR_DEVICE, index, sizeof(cp), &cp,
+	if (mgmt_reply(mgmt, MGMT_OP_CANCEL_PAIR_DEVICE, index, sizeof(cp), &cp,
 					cancel_pair_rsp, NULL, NULL) == 0) {
 		error("Unable to send cancel_pair_device cmd");
 		return noninteractive_quit(EXIT_FAILURE);
@@ -2762,6 +2808,7 @@ static void irks_usage(void)
 static struct option irks_options[] = {
 	{ "help",	0, 0, 'h' },
 	{ "local",	1, 0, 'l' },
+	{ "file",	1, 0, 'f' },
 	{ 0, 0, 0, 0 }
 };
 
@@ -2772,6 +2819,7 @@ static void cmd_irks(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	struct mgmt_cp_load_irks *cp;
 	uint8_t buf[sizeof(*cp) + 23 * MAX_IRKS];
 	uint16_t count, local_index;
+	char path[PATH_MAX];
 	int opt;
 
 	if (index == MGMT_INDEX_NONE)
@@ -2780,7 +2828,7 @@ static void cmd_irks(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 	cp = (void *) buf;
 	count = 0;
 
-	while ((opt = getopt_long(argc, argv, "+l:h",
+	while ((opt = getopt_long(argc, argv, "+l:f:h",
 					irks_options, NULL)) != -1) {
 		switch (opt) {
 		case 'l':
@@ -2794,8 +2842,24 @@ static void cmd_irks(struct mgmt *mgmt, uint16_t index, int argc, char **argv)
 				local_index = atoi(optarg + 3);
 			else
 				local_index = atoi(optarg);
-			if (!load_identity(local_index, &cp->irks[count])) {
+			snprintf(path, sizeof(path),
+				"/sys/kernel/debug/bluetooth/hci%u/identity",
+				local_index);
+			if (!load_identity(path, &cp->irks[count])) {
 				error("Unable to load identity");
+				optind = 0;
+				return noninteractive_quit(EXIT_FAILURE);
+			}
+			count++;
+			break;
+		case 'f':
+			if (count >= MAX_IRKS) {
+				error("Number of IRKs exceeded");
+				optind = 0;
+				return noninteractive_quit(EXIT_FAILURE);
+			}
+			if (!load_identity(optarg, &cp->irks[count])) {
+				error("Unable to load identities");
 				optind = 0;
 				return noninteractive_quit(EXIT_FAILURE);
 			}

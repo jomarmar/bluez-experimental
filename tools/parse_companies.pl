@@ -8,8 +8,14 @@ use strict;
 
 my %known_entities = (
     'nbsp' => ' ',
+    'aacute' => 'á',
     'eacute' => 'é',
+    'iacute' => 'í',
+    'oacute' => 'ó',
+    'uacute' => 'ú',
     'auml' => 'ä',
+    'uuml' => 'ü',
+    'Uuml' => 'Ü',
 );
 
 # better to use URI::Encode if you have it
@@ -21,8 +27,7 @@ sub uri_decode {
     }
     foreach my $entity (map { lc $_ } $name =~ /&([^;]+);/g) {
         if ($entity ne 'amp') {
-            print "Unable to convert &$entity;, giving up\n";
-            exit 1;
+            die "\nparse_companies.pl: Unable to convert &$entity; giving up\n";
         }
     }
     $name =~ s/&amp;/&/ig;
@@ -45,10 +50,11 @@ while (<>) {
         $next_is_name = 1;
 
     # next <td> should be company name
-    } elsif ($next_is_name && m|\<td.*\>(.*)\</td\>|) {
+    } elsif ($next_is_name && m|\<td.*\>(.*)\<|) {
         my $name = uri_decode($1);
         $name =~ s/^\s+//g; # kill leading
         $name =~ s/\s+$//g; # and trailing space
+        $name =~ s/"/\\"/g; # escape double quotes
         my $id = hex($identifier);
         if ($id != 65535) {
             print "\tcase $id:\n";
